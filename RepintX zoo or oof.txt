@@ -1,0 +1,326 @@
+-- LocalScript (StarterPlayerScripts)
+
+-- ==== Services ====
+local Players = game:GetService("Players")
+local Teams = game:GetService("Teams")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local UIS = game:GetService("UserInputService")
+
+local localPlayer = Players.LocalPlayer
+
+-- ==== CONFIG ====
+-- จุดวาร์ป: workspace.Lobby.Lobby.Collision:GetChildren()[15]
+local TP_HEIGHT_OFFSET = 5          -- ยกตัวขึ้นกันติดพื้น
+local NEAR_DISTANCE = 10            -- ถ้าอยู่ใกล้กว่านี้จะไม่วาร์ปซ้ำ (กรณีเกิดใกล้เป้าหมาย)
+local ENEMY_COLOR = Color3.fromRGB(255, 60, 60)
+local TOGGLE_KEY = Enum.KeyCode.F4   -- ซ่อน/โชว์ UI
+
+-- ==== Teleport target resolver ====
+local function getTeleportTarget()
+	local ok, node = pcall(function()
+		local folder = workspace:WaitForChild("Lobby", 5)
+		if not folder then return nil end
+		folder = folder:WaitForChild("Lobby", 5)
+		if not folder then return nil end
+		local collision = folder:WaitForChild("Collision", 5)
+		if not collision then return nil end
+		local children = collision:GetChildren()
+		return children[15]
+	end)
+	if not ok or not node then return nil end
+	return node
+end
+
+local function computeTargetCFrame(target)
+	if not target then return nil end
+	if target:IsA("BasePart") then
+		return target.CFrame + Vector3.new(0, TP_HEIGHT_OFFSET, 0)
+	elseif target:IsA("Model") then
+		return target:GetPivot() + Vector3.new(0, TP_HEIGHT_OFFSET, 0)
+	else
+		local part = target:FindFirstChildWhichIsA("BasePart", true)
+		if not part then return nil end
+		return part.CFrame + Vector3.new(0, TP_HEIGHT_OFFSET, 0)
+	end
+end
+
+-- ==== ESP helpers ====
+local function clearESPForCharacter(char)
+	if not char then return end
+	if char:FindFirstChild("Highlight") then char.Highlight:Destroy() end
+	if char:FindFirstChild("NameBillboard") then char.NameBillboard:Destroy() end
+end
+
+local function setESPForPlayer(p)
+	if not p.Character or not p.Character:FindFirstChild("Head") then return end
+
+	-- Highlight
+	local hl = p.Character:FindFirstChildOfClass("Highlight") or Instance.new("Highlight")
+	hl.Name = "Highlight"
+	hl.FillColor = ENEMY_COLOR
+	hl.OutlineColor = Color3.new(1,1,1)
+	hl.FillTransparency = 0.5
+	hl.Adornee = p.Character
+	hl.Parent = p.Character
+
+	-- Billboard name
+	local bb = p.Character:FindFirstChild("NameBillboard")
+	if not bb then
+		bb = Instance.new("BillboardGui")
+		bb.Name = "NameBillboard"
+		bb.Size = UDim2.new(0, 160, 0, 36)
+		bb.StudsOffset = Vector3.new(0, 2.25, 0)
+		bb.AlwaysOnTop = true
+		bb.MaxDistance = 300
+		bb.Parent = p.Character
+	end
+	bb.Adornee = p.Character.Head
+
+	local tl = bb:FindFirstChildOfClass("TextLabel")
+	if not tl then
+		tl = Instance.new("TextLabel")
+		tl.BackgroundTransparency = 1
+		tl.Size = UDim2.new(1, 0, 1, 0)
+		tl.TextScaled = true
+		tl.TextStrokeTransparency = 0
+		tl.Parent = bb
+	end
+	tl.Text = p.Name
+	tl.TextColor3 = ENEMY_COLOR
+end
+
+local function isEnemy(p)
+	if not localPlayer.Team or not p.Team then return false end
+	return p.Team ~= localPlayer.Team
+end
+
+local function updateESPOnce()
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= localPlayer then
+			if isEnemy(p) then
+				setESPForPlayer(p)
+			else
+				clearESPForCharacter(p.Character)
+			end
+		end
+	end
+end
+
+-- ==== UI ====
+local pg = localPlayer:WaitForChild("PlayerGui")
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "ESP_TP_UI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.IgnoreGuiInset = true
+ScreenGui.Parent = pg
+
+local Frame = Instance.new("Frame")
+Frame.Size = UDim2.new(0, 260, 0, 176)
+Frame.Position = UDim2.new(0, 20, 0, 200)
+Frame.BackgroundColor3 = Color3.fromRGB(20, 22, 28)
+Frame.BackgroundTransparency = 0.1
+Frame.BorderSizePixel = 0
+Frame.Active = true
+Frame.Draggable = true
+Frame.Parent = ScreenGui
+
+local UICorner = Instance.new("UICorner", Frame)
+UICorner.CornerRadius = UDim.new(0, 12)
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, -20, 0, 28)
+Title.Position = UDim2.new(0, 10, 0, 8)
+Title.BackgroundTransparency = 1
+Title.Text = "ESP & Teleport"
+Title.TextColor3 = Color3.fromRGB(230, 230, 240)
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Font = Enum.Font.GothamBold
+Title.TextSize = 18
+Title.Parent = Frame
+
+local Divider = Instance.new("Frame")
+Divider.Size = UDim2.new(1, -20, 0, 1)
+Divider.Position = UDim2.new(0, 10, 0, 38)
+Divider.BackgroundColor3 = Color3.fromRGB(60, 64, 72)
+Divider.BorderSizePixel = 0
+Divider.Parent = Frame
+
+-- Toggle ESP
+local EspToggle = Instance.new("TextButton")
+EspToggle.Size = UDim2.new(1, -20, 0, 36)
+EspToggle.Position = UDim2.new(0, 10, 0, 48)
+EspToggle.Text = "ESP: OFF"
+EspToggle.Font = Enum.Font.Gotham
+EspToggle.TextSize = 16
+EspToggle.TextColor3 = Color3.fromRGB(240, 240, 240)
+EspToggle.BackgroundColor3 = Color3.fromRGB(38, 42, 54)
+EspToggle.AutoButtonColor = false
+EspToggle.Parent = Frame
+Instance.new("UICorner", EspToggle).CornerRadius = UDim.new(0, 8)
+
+-- Teleport (manual)
+local TpBtn = Instance.new("TextButton")
+TpBtn.Size = UDim2.new(1, -20, 0, 36)
+TpBtn.Position = UDim2.new(0, 10, 0, 92)
+TpBtn.Text = "Teleport Now (Animal only)"
+TpBtn.Font = Enum.Font.Gotham
+TpBtn.TextSize = 16
+TpBtn.TextColor3 = Color3.fromRGB(20, 20, 22)
+TpBtn.BackgroundColor3 = Color3.fromRGB(140, 230, 170)
+TpBtn.AutoButtonColor = true
+TpBtn.Parent = Frame
+Instance.new("UICorner", TpBtn).CornerRadius = UDim.new(0, 8)
+
+-- Status line
+local Status = Instance.new("TextLabel")
+Status.Size = UDim2.new(1, -20, 0, 28)
+Status.Position = UDim2.new(0, 10, 0, 136)
+Status.BackgroundTransparency = 1
+Status.Font = Enum.Font.Gotham
+Status.TextSize = 14
+Status.TextXAlignment = Enum.TextXAlignment.Left
+Status.TextColor3 = Color3.fromRGB(200, 205, 215)
+Status.Text = "Ready"
+Status.Parent = Frame
+
+-- Hide/Show UI (กด F4)
+UIS.InputBegan:Connect(function(input, gpe)
+	if gpe then return end
+	if input.KeyCode == TOGGLE_KEY then
+		Frame.Visible = not Frame.Visible
+	end
+end)
+
+-- ==== ESP Runtime Control ====
+local espEnabled = false
+local espConn -- RBXScriptConnection
+
+local function setEspEnabled(state)
+	espEnabled = state
+	EspToggle.Text = state and "ESP: ON" or "ESP: OFF"
+	EspToggle.BackgroundColor3 = state and Color3.fromRGB(60, 130, 255) or Color3.fromRGB(38, 42, 54)
+
+	if state then
+		updateESPOnce()
+		if espConn then espConn:Disconnect() end
+		espConn = RunService.RenderStepped:Connect(function()
+			-- อัปเดตเบา ๆ ทุก ~0.25s
+			if not espEnabled then return end
+			if (time() % 0.25) < 1/60 then
+				updateESPOnce()
+			end
+		end)
+	else
+		if espConn then espConn:Disconnect() espConn = nil end
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p ~= localPlayer then
+				clearESPForCharacter(p.Character)
+			end
+		end
+	end
+end
+
+EspToggle.MouseButton1Click:Connect(function()
+	setEspEnabled(not espEnabled)
+end)
+
+-- อัปเดต ESP เมื่อมีเหตุการณ์สำคัญ
+Players.PlayerAdded:Connect(function(p)
+	p.CharacterAdded:Connect(function()
+		if espEnabled then task.delay(1, updateESPOnce) end
+	end)
+end)
+Players.PlayerRemoving:Connect(function()
+	if espEnabled then task.delay(0, updateESPOnce) end
+end)
+localPlayer:GetPropertyChangedSignal("Team"):Connect(function()
+	if espEnabled then task.delay(0, updateESPOnce) end
+end)
+
+-- ==== Teleport: One-time per Animal session ====
+local alreadyTeleported = false
+local lastTeam = nil
+
+local function canTeleportAnimal()
+	return localPlayer.Team and Teams:FindFirstChild("Animal") and localPlayer.Team == Teams.Animal
+end
+
+local function doTeleport()
+	if not localPlayer.Character then return false, "no char" end
+	local hum = localPlayer.Character:FindFirstChildOfClass("Humanoid")
+	local hrp = localPlayer.Character:FindFirstChild("HumanoidRootPart")
+	if not hum or not hrp then return false, "no humanoid/hrp" end
+
+	local target = getTeleportTarget()
+	if not target then return false, "target not found" end
+
+	local targetCf = computeTargetCFrame(target)
+	if not targetCf then return false, "no part to TP" end
+
+	-- กันวาร์ปซ้ำถ้าใกล้มากอยู่แล้ว
+	if (hrp.Position - targetCf.Position).Magnitude <= NEAR_DISTANCE then
+		return false, "already near"
+	end
+
+	hrp.CFrame = targetCf
+	return true
+end
+
+-- วาร์ปแมนนวล (เฉพาะ Animal)
+local function teleportManual()
+	if not canTeleportAnimal() then
+		-- กระพริบปุ่มเตือน
+		local tween1 = TweenService:Create(TpBtn, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(255, 120, 120)})
+		local tween2 = TweenService:Create(TpBtn, TweenInfo.new(0.25), {BackgroundColor3 = Color3.fromRGB(140, 230, 170)})
+		tween1:Play(); tween1.Completed:Wait(); tween2:Play()
+		Status.Text = "You are not Animal"
+		return
+	end
+
+	local ok, why = doTeleport()
+	if ok then
+		local tweenOK1 = TweenService:Create(TpBtn, TweenInfo.new(0.1), {BackgroundColor3 = Color3.fromRGB(110, 210, 150)})
+		local tweenOK2 = TweenService:Create(TpBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(140, 230, 170)})
+		tweenOK1:Play(); tweenOK1.Completed:Wait(); tweenOK2:Play()
+		Status.Text = "Teleported (manual)"
+	else
+		Status.Text = "TP failed: " .. tostring(why)
+	end
+end
+TpBtn.MouseButton1Click:Connect(teleportManual)
+
+-- วาร์ปอัตโนมัติ “ครั้งเดียว” ต่อช่วงที่เป็น Animal
+local function tryAutoTeleportOnce()
+	if not canTeleportAnimal() then return end
+	if alreadyTeleported then return end
+	local ok, why = doTeleport()
+	if ok then
+		alreadyTeleported = true
+		Status.Text = "Teleported (auto once)"
+	else
+		Status.Text = "Auto TP failed: " .. tostring(why)
+	end
+end
+
+-- เปลี่ยนทีม → รีเซ็ตสิทธิ์วาร์ปครั้งเดียว แล้วลองวาร์ป (ถ้า Animal)
+localPlayer:GetPropertyChangedSignal("Team"):Connect(function()
+	if localPlayer.Team ~= lastTeam then
+		alreadyTeleported = false
+		lastTeam = localPlayer.Team
+		task.defer(tryAutoTeleportOnce)
+	end
+end)
+
+-- เกิดใหม่ → รีเซ็ตสิทธิ์วาร์ปครั้งเดียว แล้วลองวาร์ป (ถ้า Animal)
+localPlayer.CharacterAdded:Connect(function()
+	alreadyTeleported = false
+	task.delay(1, tryAutoTeleportOnce) -- รอโหลดตัวละครนิดหนึ่ง
+end)
+
+-- เริ่มต้น
+setEspEnabled(false)
+lastTeam = localPlayer.Team
+task.defer(tryAutoTeleportOnce)
+Status.Text = "Ready"
