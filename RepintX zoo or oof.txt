@@ -1,41 +1,56 @@
 -- ========= LOAD X2ZU UI =========
-local Library = loadstring(game:HttpGet(
-    "https://raw.githubusercontent.com/x2zu/OPEN-SOURCE-UI-ROBLOX/refs/heads/main/X2ZU%20UI%20ROBLOX%20OPEN%20SOURCE/DummyUi-leak-by-x2zu/fetching-main/Tools/Framework.luau"
-))()
+local okLib, Library = pcall(function()
+    return loadstring(game:HttpGet(
+        "https://raw.githubusercontent.com/x2zu/OPEN-SOURCE-UI-ROBLOX/refs/heads/main/X2ZU%20UI%20ROBLOX%20OPEN%20SOURCE/DummyUi-leak-by-x2zu/fetching-main/Tools/Framework.luau"
+    ))()
+end)
+if not okLib or type(Library) ~= "table" or not Library.Window then
+    warn("[RepintX] Failed to load x2zu UI framework")
+    return
+end
 
 local Window = Library:Window({
     Title = "RepintX — Zoo or oof",
-    Desc  = "ESP / Teleport / Webhook / WalkSpeed",
+    Desc  = "ESP / Teleport / Webhook / Movement / Players / AFK / Rejoin",
     Icon  = 105059922903197,
     Theme = "Dark",
-    Config = { Keybind = Enum.KeyCode.LeftControl, Size = UDim2.new(0, 560, 0, 420) },
+    Config = { Keybind = Enum.KeyCode.LeftControl, Size = UDim2.new(0, 640, 0, 480) },
     CloseUIButton = { Enabled = true, Text = "x2zu" }
 })
 
 -- ========= SERVICES =========
-local Players      = game:GetService("Players")
-local Teams        = game:GetService("Teams")
-local RunService   = game:GetService("RunService")
-local HttpService  = game:GetService("HttpService")
-local UserInput    = game:GetService("UserInputService")
+local Players       = game:GetService("Players")
+local Teams         = game:GetService("Teams")
+local RunService    = game:GetService("RunService")
+local HttpService   = game:GetService("HttpService")
+local TeleportService = game:GetService("TeleportService")
+local Workspace     = game:GetService("Workspace")
+local VirtualUser   = game:GetService("VirtualUser")
 
-local localPlayer  = Players.LocalPlayer
+local localPlayer   = Players.LocalPlayer
 
 -- ========= CONFIG =========
 local ENEMY_COLOR      = Color3.fromRGB(255, 60, 60)
 local TP_HEIGHT_OFFSET = 5
 local NEAR_DISTANCE    = 10
-local CHECK_INTERVAL   = 0.30
+local CHECK_INTERVAL   = 0.30 -- auto TP interval
+local REJOIN_MIN_PLAYERS = 5
+local REJOIN_CHECK_EVERY = 20 -- seconds
 
--- ========= TELEPORT =========
+-- ========= UTIL =========
+local function safeNotify(t, d, time)
+    pcall(function()
+        Window:Notify({ Title = t, Desc = d, Time = time or 2 })
+    end)
+end
+
+-- ========= TELEPORT TARGET =========
+-- จุดวาร์ป: workspace.Lobby.Lobby.Collision:GetChildren()[15]
 local function getTeleportTarget()
     local ok, node = pcall(function()
-        local f = workspace:WaitForChild("Lobby", 5)
-        if not f then return nil end
-        f = f:WaitForChild("Lobby", 5)
-        if not f then return nil end
-        local c = f:WaitForChild("Collision", 5)
-        if not c then return nil end
+        local f = workspace:WaitForChild("Lobby", 5); if not f then return nil end
+        f = f:WaitForChild("Lobby", 5); if not f then return nil end
+        local c = f:WaitForChild("Collision", 5); if not c then return nil end
         local children = c:GetChildren()
         return children[15]
     end)
@@ -57,22 +72,24 @@ local function computeTargetCFrame(target)
 end
 
 local function doTeleport()
-    if not localPlayer.Character then return false,"no char" end
+    if not localPlayer.Character then return false, "no char" end
     local hrp = localPlayer.Character:FindFirstChild("HumanoidRootPart")
-    if not hrp then return false,"no hrp" end
+    if not hrp then return false, "no hrp" end
     local target = getTeleportTarget()
-    if not target then return false,"no target" end
+    if not target then return false, "target not found" end
     local cf = computeTargetCFrame(target)
-    if not cf then return false,"no cf" end
-    if (hrp.Position - cf.Position).Magnitude <= NEAR_DISTANCE then return false,"already near" end
+    if not cf then return false, "no part to TP" end
+    if (hrp.Position - cf.Position).Magnitude <= NEAR_DISTANCE then
+        return false, "already near"
+    end
     hrp.CFrame = cf
     return true
 end
 
 local function isAnimalTeam()
     if not localPlayer.Team then return false end
-    local t = Teams:FindFirstChild("Animal")
-    return (t and localPlayer.Team == t) or (localPlayer.Team.Name == "Animal")
+    local animal = Teams:FindFirstChild("Animal")
+    return (animal and localPlayer.Team == animal) or (localPlayer.Team.Name == "Animal")
 end
 
 -- ========= ESP =========
@@ -95,11 +112,11 @@ local function setESPForPlayer(p)
     local bb = p.Character:FindFirstChild("NameBillboard")
     if not bb then
         bb = Instance.new("BillboardGui")
-        bb.Size = UDim2.new(0,160,0,36)
-        bb.StudsOffset = Vector3.new(0,2.25,0)
+        bb.Name = "NameBillboard"
+        bb.Size = UDim2.new(0, 160, 0, 36)
+        bb.StudsOffset = Vector3.new(0, 2.25, 0)
         bb.AlwaysOnTop = true
         bb.MaxDistance = 300
-        bb.Name = "NameBillboard"
         bb.Parent = p.Character
     end
     bb.Adornee = p.Character.Head
@@ -107,8 +124,8 @@ local function setESPForPlayer(p)
     local tl = bb:FindFirstChildOfClass("TextLabel")
     if not tl then
         tl = Instance.new("TextLabel")
-        tl.Size = UDim2.new(1,0,1,0)
         tl.BackgroundTransparency = 1
+        tl.Size = UDim2.new(1, 0, 1, 0)
         tl.TextScaled = true
         tl.TextStrokeTransparency = 0
         tl.Parent = bb
@@ -117,198 +134,477 @@ local function setESPForPlayer(p)
     tl.TextColor3 = ENEMY_COLOR
 end
 
-local function isEnemy(p) return localPlayer.Team and p.Team and (p.Team ~= localPlayer.Team) end
+local function isEnemy(p)
+    if not localPlayer.Team or not p.Team then return false end
+    return p.Team ~= localPlayer.Team
+end
+
 local function updateESPOnce()
-    for _,p in ipairs(Players:GetPlayers()) do
+    for _, p in ipairs(Players:GetPlayers()) do
         if p ~= localPlayer then
             if isEnemy(p) then setESPForPlayer(p) else clearESPForCharacter(p.Character) end
         end
     end
 end
 
--- ========= UI =========
-local TabMain = Window:Tab({ Title="Main", Icon="star" })
-local TabHook = Window:Tab({ Title="Webhook", Icon="tag" })
-local TabSet  = Window:Tab({ Title="Settings", Icon="wrench" })
+-- ========= UI TABS =========
+local TabMain   = Window:Tab({ Title = "Main",    Icon = "star"   })
+local TabHook   = Window:Tab({ Title = "Webhook", Icon = "tag"    })
+local TabSet    = Window:Tab({ Title = "Settings",Icon = "wrench" })
+local TabPlayer = Window:Tab({ Title = "Players", Icon = "users"  })
 Window:Line()
 
--- Status
-local StatusBlock = TabMain:Code({ Title="Status", Code="Status: Ready\nRole: -" })
+-- ---------- Main ----------
+TabMain:Section({ Title = "ESP & Teleport" })
+local StatusBlock = TabMain:Code({ Title = "Status", Code = "Status: Ready\nRole: -" })
 local function setStatus(text)
     local role = (localPlayer.Team and localPlayer.Team.Name) or "-"
     StatusBlock:SetCode(("Status: %s\nRole: %s"):format(text, role))
 end
 
 -- ESP Toggle
-local espEnabled, espConn = false,nil
+local espEnabled, espConn = false, nil
 TabMain:Toggle({
-    Title="ESP Highlight",
-    Desc="ไฮไลท์ศัตรู + ป้ายชื่อ",
-    Value=false,
-    Callback=function(v)
+    Title = "ESP Highlight",
+    Desc  = "ไฮไลท์ศัตรู + ป้ายชื่อ",
+    Value = false,
+    Callback = function(v)
         espEnabled = v
         if v then
             updateESPOnce()
             if espConn then espConn:Disconnect() end
             espConn = RunService.RenderStepped:Connect(function()
-                if (time()%0.25)<1/60 then updateESPOnce() end
+                if (time() % 0.25) < 1/60 then updateESPOnce() end
             end)
-            Window:Notify({Title="ESP",Desc="ON",Time=2})
+            safeNotify("ESP", "ON", 2)
         else
-            if espConn then espConn:Disconnect(); espConn=nil end
-            for _,p in ipairs(Players:GetPlayers()) do if p~=localPlayer then clearESPForCharacter(p.Character) end end
-            Window:Notify({Title="ESP",Desc="OFF",Time=2})
+            if espConn then espConn:Disconnect(); espConn = nil end
+            for _, p in ipairs(Players:GetPlayers()) do if p ~= localPlayer then clearESPForCharacter(p.Character) end end
+            safeNotify("ESP", "OFF", 2)
         end
     end
 })
 
 -- Teleport Now
 TabMain:Button({
-    Title="Teleport Now",
-    Desc="วาร์ปทันที (Animal only)",
-    Callback=function()
+    Title = "Teleport Now (Animal only)",
+    Desc  = "วาร์ปทันทีเมื่อเป็น Animal",
+    Callback = function()
         if not isAnimalTeam() then setStatus("Not Animal"); return end
-        local ok,why = doTeleport()
-        if ok then setStatus("Teleported manual") else setStatus("Fail: "..why) end
+        local ok, why = doTeleport()
+        if ok then setStatus("Teleported manual") else setStatus("Fail: "..tostring(why)) end
     end
 })
 
--- Auto Teleport Animal only
-local autoTP=false; local loopConn=nil
+-- Auto Teleport Animal only (loop)
+local autoTP, tpLoopConn = false, nil
 TabMain:Toggle({
-    Title="Teleport Animal only (auto)",
-    Desc="วาร์ปตลอดเวลาที่เป็น Animal",
-    Value=false,
-    Callback=function(v)
+    Title = "Teleport Animal only (auto)",
+    Desc  = "เป็น Animal เมื่อไหร่ เช็คตลอด ถ้าไกลจะวาร์ป",
+    Value = false,
+    Callback = function(v)
         autoTP = v
         if v then
-            if loopConn then loopConn:Disconnect(); loopConn=nil end
-            local acc=0
-            loopConn = RunService.Heartbeat:Connect(function(dt)
-                acc+=dt; if acc<CHECK_INTERVAL then return end; acc=0
+            if tpLoopConn then tpLoopConn:Disconnect(); tpLoopConn = nil end
+            local acc = 0
+            tpLoopConn = RunService.Heartbeat:Connect(function(dt)
+                acc += dt; if acc < CHECK_INTERVAL then return end; acc = 0
                 if not autoTP or not isAnimalTeam() then return end
-                local ok,why = doTeleport()
-                if ok then setStatus("Teleported auto") elseif why~="already near" then setStatus("AutoTP fail:"..why) end
+                local ok, why = doTeleport()
+                if ok then setStatus("Teleported auto") elseif why ~= "already near" then setStatus("AutoTP fail: "..tostring(why)) end
             end)
+            setStatus("AutoTP ON")
         else
-            if loopConn then loopConn:Disconnect(); loopConn=nil end
+            if tpLoopConn then tpLoopConn:Disconnect(); tpLoopConn = nil end
             setStatus("AutoTP OFF")
         end
     end
 })
 
--- ========= WEBHOOK =========
-local state={url="",interval="60s"}
+-- ---------- Webhook ----------
+TabHook:Section({ Title = "Discord Webhook" })
+local hookState = { url = "", interval = "60s" }
+
 local function parseInterval(str)
-    str=tostring(str or ""):lower():gsub("%s+","")
-    local n=tonumber(str)
-    if n then return n end
-    local num,unit=str:match("^(%d+)([smh])$")
-    num=tonumber(num)
-    if num and unit=="s" then return num end
-    if num and unit=="m" then return num*60 end
-    if num and unit=="h" then return num*3600 end
+    str = tostring(str or ""):lower():gsub("%s+", "")
+    local n = tonumber(str)
+    if n then return math.max(1, n) end
+    local num, unit = str:match("^(%d+)([smh])$")
+    num = tonumber(num)
+    if num and unit == "s" then return math.max(1, num) end
+    if num and unit == "m" then return math.max(1, num * 60) end
+    if num and unit == "h" then return math.max(1, num * 3600) end
     return 60
 end
 
-local function validUrl(u) return typeof(u)=="string" and u:match("^https?://discord%.com/api/webhooks/") end
+local function validUrl(u)
+    return typeof(u) == "string" and u:match("^https?://discord%.com/api/webhooks/")
+end
+
 local function currentStats()
-    local wins,cash=0,0
-    local ls=localPlayer:FindFirstChild("leaderstats")
+    local wins, cash = 0, 0
+    local ls = localPlayer:FindFirstChild("leaderstats")
     if ls then
-        local w=ls:FindFirstChild("🏆Wins") or ls:FindFirstChild("Wins")
-        local c=ls:FindFirstChild("💸Cash") or ls:FindFirstChild("Cash") or ls:FindFirstChild("Coins")
-        if w then wins=w.Value end
-        if c then cash=c.Value end
+        local w = ls:FindFirstChild("🏆Wins") or ls:FindFirstChild("Wins")
+        local c = ls:FindFirstChild("💸Cash") or ls:FindFirstChild("Cash") or ls:FindFirstChild("Coins")
+        if w then wins = w.Value end
+        if c then cash = c.Value end
     end
-    return wins,cash
+    return wins, cash
 end
 
 local function makePayload()
-    local wins,cash=currentStats()
-    local role=(localPlayer.Team and localPlayer.Team.Name) or "N/A"
+    local wins, cash = currentStats()
+    local role = (localPlayer.Team and localPlayer.Team.Name) or "N/A"
     return {
-        username="RepintX",
-        embeds={{color=10971374,
-            fields={
-                {name="Player",value=localPlayer.Name,inline=true},
-                {name="Role",value=role,inline=true},
-                {name="Wins",value=tostring(wins),inline=true},
-                {name="Cash",value=tostring(cash),inline=true}
+        username = "RepintX",
+        embeds = {{
+            color = 10971374,
+            fields = {
+                { name = "Player", value = localPlayer.Name, inline = true },
+                { name = "Role",   value = role,            inline = true },
+                { name = "Wins",   value = tostring(wins),  inline = true },
+                { name = "Cash",   value = tostring(cash),  inline = true },
             }
         }}
     }
 end
 
 local function sendWebhookOnce(url)
-    if not validUrl(url) then Window:Notify({Title="Webhook",Desc="Invalid URL",Time=2}); return end
-    local data=HttpService:JSONEncode(makePayload())
-    local headers={["Content-Type"]="application/json"}
-    local requestFunc=http_request or request or syn and syn.request
+    if not validUrl(url) then safeNotify("Webhook", "Invalid URL", 2); return false end
+    local body = HttpService:JSONEncode(makePayload())
+    local headers = { ["Content-Type"] = "application/json" }
+    local requestFunc = (getgenv and (getgenv().http_request or getgenv().request))
+                      or http_request or request or (syn and syn.request)
     if requestFunc then
-        requestFunc({Url=url,Method="POST",Headers=headers,Body=data})
-        Window:Notify({Title="Webhook",Desc="Sent",Time=2})
+        local ok, err = pcall(function()
+            requestFunc({ Url = url, Method = "POST", Headers = headers, Body = body })
+        end)
+        if ok then safeNotify("Webhook", "Sent ✔", 2); return true
+        else safeNotify("Webhook", "Send failed: "..tostring(err), 3); return false end
     else
-        HttpService:PostAsync(url,data,Enum.HttpContentType.ApplicationJson)
+        local ok, err = pcall(function()
+            HttpService:PostAsync(url, body, Enum.HttpContentType.ApplicationJson)
+        end)
+        if ok then safeNotify("Webhook", "Sent (HttpService) ✔", 2); return true
+        else safeNotify("Webhook", "Send failed: "..tostring(err), 3); return false end
     end
 end
 
 TabHook:Textbox({
-    Title="Webhook URL",Value="",Placeholder="https://discord.com/api/webhooks/...",
-    Callback=function(text) state.url=text end
+    Title = "Webhook URL",
+    Value = "",
+    Placeholder = "https://discord.com/api/webhooks/...",
+    Callback = function(text) hookState.url = text end
 })
 TabHook:Textbox({
-    Title="Interval",Value="60s",Placeholder="เช่น 30s, 2m, 1h",
-    Callback=function(text) state.interval=text end
+    Title = "Interval",
+    Value = "60s",
+    Placeholder = "30 / 30s / 2m / 1h",
+    Callback = function(text) hookState.interval = text end
 })
-local autoSend=false; local token=0
+local autoSend, autoToken = false, 0
 TabHook:Toggle({
-    Title="Auto Send",Value=false,
-    Callback=function(v)
-        autoSend=v; token+=1; local my=token
+    Title = "Auto Send",
+    Desc  = "ส่ง Embed ตามช่วงเวลา",
+    Value = false,
+    Callback = function(v)
+        autoSend = v; autoToken += 1; local my = autoToken
         if v then
             task.spawn(function()
-                while autoSend and my==token do
-                    sendWebhookOnce(state.url)
-                    local waitSec=parseInterval(state.interval)
-                    for i=1,waitSec do if not autoSend or my~=token then return end; task.wait(1) end
+                while autoSend and my == autoToken do
+                    sendWebhookOnce(hookState.url)
+                    local waitSec = parseInterval(hookState.interval)
+                    for i = 1, waitSec do
+                        if not autoSend or my ~= autoToken then return end
+                        task.wait(1)
+                    end
                 end
             end)
         end
     end
 })
 TabHook:Button({
-    Title="Send Now",Callback=function() sendWebhookOnce(state.url) end
+    Title = "Send Now",
+    Desc  = "ส่งข้อมูลทันที",
+    Callback = function() sendWebhookOnce(hookState.url) end
 })
 
--- ========= SETTINGS =========
-local walkspeed=16
+-- ---------- Settings ----------
+TabSet:Section({ Title = "Movement" })
+local function setWalkspeed(val)
+    local char = localPlayer.Character
+    if char then
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then hum.WalkSpeed = val end
+    end
+end
 TabSet:Slider({
-    Title="WalkSpeed",Min=16,Max=100,Value=16,
-    Callback=function(val)
-        walkspeed=val
-        if localPlayer.Character and localPlayer.Character:FindFirstChildOfClass("Humanoid") then
-            localPlayer.Character:FindFirstChildOfClass("Humanoid").WalkSpeed=val
-        end
-    end
+    Title = "WalkSpeed",
+    Min = 16, Max = 100, Value = 16, Rounding = 0,
+    Callback = function(v) setWalkspeed(v) end
 })
-
-local noclip=false
+local noclip = false
 TabSet:Toggle({
-    Title="NoClip",Value=false,
-    Callback=function(v)
-        noclip=v
-    end
+    Title = "NoClip",
+    Desc  = "เดินทะลุวัตถุ",
+    Value = false,
+    Callback = function(v) noclip = v end
 })
-
 RunService.Stepped:Connect(function()
     if noclip and localPlayer.Character then
-        for _,part in pairs(localPlayer.Character:GetDescendants()) do
-            if part:IsA("BasePart") and part.CanCollide then
-                part.CanCollide=false
-            end
+        for _, part in pairs(localPlayer.Character:GetDescendants()) do
+            if part:IsA("BasePart") then part.CanCollide = false end
         end
     end
 end)
+localPlayer.CharacterAdded:Connect(function()
+    task.wait(0.25)
+    setWalkspeed(16) -- reset on respawn
+end)
 
-Window:Notify({Title="RepintX",Desc="UI Loaded. LeftCtrl to toggle.",Time=4})
+-- Anti AFK
+TabSet:Section({ Title = "AFK" })
+local antiAFKEnabled, idledConn = false, nil
+TabSet:Toggle({
+    Title = "Anti AFK",
+    Desc  = "ป้องกันหลุดจากการไม่ขยับ",
+    Value = false,
+    Callback = function(v)
+        antiAFKEnabled = v
+        if idledConn then idledConn:Disconnect(); idledConn = nil end
+        if v then
+            idledConn = Players.LocalPlayer.Idled:Connect(function()
+                if not antiAFKEnabled then return end
+                VirtualUser:CaptureController()
+                VirtualUser:Button2Down(Vector2.new(0,0), Workspace.CurrentCamera.CFrame)
+                task.wait(0.1)
+                VirtualUser:Button2Up(Vector2.new(0,0), Workspace.CurrentCamera.CFrame)
+            end)
+            safeNotify("Anti AFK", "ON", 2)
+        else
+            safeNotify("Anti AFK", "OFF", 2)
+        end
+    end
+})
+
+-- Check Player Rejoin
+TabSet:Section({ Title = "Server Rejoin" })
+local rejoinEnabled, rejoinToken, lastTeleportAt = false, 0, 0
+
+local function findBestServerId(maxPages)
+    maxPages = maxPages or 3
+    local req = (getgenv and (getgenv().http_request or getgenv().request))
+             or http_request or request or (syn and syn.request)
+    if not req then return nil end
+
+    local bestId, bestPlaying = nil, -1
+    local cursor = ""
+    for _ = 1, maxPages do
+        local url = string.format(
+            "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Desc&limit=100%s",
+            game.PlaceId,
+            (cursor ~= "" and ("&cursor="..cursor) or "")
+        )
+        local ok, resp = pcall(function() return req({ Url = url, Method = "GET" }) end)
+        if not ok or not resp or not resp.Body then break end
+
+        local data = nil
+        pcall(function() data = HttpService:JSONDecode(resp.Body) end)
+        if not data or not data.data then break end
+
+        for _, srv in ipairs(data.data) do
+            local playing = tonumber(srv.playing) or 0
+            local maxP    = tonumber(srv.maxPlayers) or 0
+            local id      = srv.id
+            if id and id ~= game.JobId and playing < maxP then
+                if playing > bestPlaying then
+                    bestPlaying = playing
+                    bestId = id
+                end
+            end
+        end
+
+        cursor = data.nextPageCursor or ""
+        if cursor == "" then break end
+    end
+    return bestId
+end
+
+local function rejoinBest()
+    if os.clock() - lastTeleportAt < 5 then return end
+    lastTeleportAt = os.clock()
+    local best = nil
+    pcall(function() best = findBestServerId(3) end)
+    if best then
+        safeNotify("Rejoin", "Teleport to busy server…", 2)
+        TeleportService:TeleportToPlaceInstance(game.PlaceId, best, localPlayer)
+    else
+        safeNotify("Rejoin", "Teleport (random)…", 2)
+        TeleportService:Teleport(game.PlaceId, localPlayer)
+    end
+end
+
+TabSet:Toggle({
+    Title = "Check Player Rejoin",
+    Desc  = ("คนน้อยกว่า %d จะย้ายห้องอัตโนมัติ"):format(REJOIN_MIN_PLAYERS),
+    Value = false,
+    Callback = function(v)
+        rejoinEnabled = v
+        rejoinToken += 1
+        local my = rejoinToken
+        if v then
+            safeNotify("Rejoin", ("Auto: ON (min < %d)"):format(REJOIN_MIN_PLAYERS), 3)
+            task.spawn(function()
+                while rejoinEnabled and my == rejoinToken do
+                    local count = #Players:GetPlayers()
+                    if count < REJOIN_MIN_PLAYERS then
+                        rejoinBest()
+                        return
+                    end
+                    for i = 1, REJOIN_CHECK_EVERY do
+                        if not rejoinEnabled or my ~= rejoinToken then return end
+                        task.wait(1)
+                    end
+                end
+            end)
+        else
+            safeNotify("Rejoin", "Auto: OFF", 2)
+        end
+    end
+})
+TabSet:Button({
+    Title = "Rejoin Now",
+    Desc  = "ย้ายห้องเดี๋ยวนี้",
+    Callback = function() rejoinBest() end
+})
+
+-- ---------- Players ----------
+TabPlayer:Section({ Title = "Player Viewer" })
+
+local function buildPlayerList()
+    local list = {}
+    for _, p in ipairs(Players:GetPlayers()) do table.insert(list, p.Name) end
+    table.sort(list); return list
+end
+local function getPlayerByName(name)
+    for _, p in ipairs(Players:GetPlayers()) do if p.Name == name then return p end end
+    return nil
+end
+
+local selectedName = localPlayer.Name
+local Dropdown = TabPlayer:Dropdown({
+    Title = "Select Player",
+    List  = buildPlayerList(),
+    Value = selectedName,
+    Callback = function(v) selectedName = v end
+})
+TabPlayer:Button({
+    Title = "Refresh List",
+    Desc  = "อัปเดตรายชื่อผู้เล่น",
+    Callback = function()
+        Dropdown:SetList(buildPlayerList())
+        if not getPlayerByName(selectedName) then
+            selectedName = localPlayer.Name
+            Dropdown:SetValue(selectedName)
+        end
+        safeNotify("Players", "List refreshed", 2)
+    end
+})
+local InfoBlock = TabPlayer:Code({ Title = "Player Info", Code = "Select a player..." })
+local function getLeaderVal(plr, keys)
+    local ls = plr and plr:FindFirstChild("leaderstats")
+    if not ls then return nil end
+    for _, k in ipairs(keys) do
+        local it = ls:FindFirstChild(k)
+        if it and it.Value ~= nil then return it.Value end
+    end
+    return nil
+end
+local infoAcc = 0
+RunService.Heartbeat:Connect(function(dt)
+    infoAcc += dt; if infoAcc < 0.3 then return end; infoAcc = 0
+    local p = getPlayerByName(selectedName)
+    if not p then InfoBlock:SetCode("Player not found"); return end
+    local char = p.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local myHrp = localPlayer.Character and localPlayer.Character:FindFirstChild("HumanoidRootPart")
+    local dist = (hrp and myHrp) and math.floor((hrp.Position - myHrp.Position).Magnitude) or "-"
+    local teamName = (p.Team and p.Team.Name) or "-"
+    local hp = hum and math.floor(hum.Health) or "-"
+    local wins = getLeaderVal(p, {"🏆Wins","Wins"}) or "-"
+    local cash = getLeaderVal(p, {"💸Cash","Cash","Coins"}) or "-"
+    local alive = (hum and hum.Health > 0) and "Alive" or "Dead/NoHumanoid"
+    InfoBlock:SetCode(string.format(
+        "Name: %s (%s)\nTeam: %s\nHP: %s\nWins: %s\nCash: %s\nDistance: %s studs\nCharacter: %s",
+        p.Name, p.DisplayName, teamName, tostring(hp), tostring(wins), tostring(cash), tostring(dist), tostring(alive)
+    ))
+end)
+
+-- Spectate
+local spectateOn, spectateTarget = false, nil
+local specTargetAdded, specMeAdded = nil, nil
+
+local function stopSpectate()
+    spectateOn = false
+    spectateTarget = nil
+    local myChar = localPlayer.Character
+    local myHum = myChar and myChar:FindFirstChildOfClass("Humanoid")
+    if myHum then Workspace.CurrentCamera.CameraSubject = myHum end
+    if specTargetAdded then specTargetAdded:Disconnect(); specTargetAdded = nil end
+    if specMeAdded then specMeAdded:Disconnect(); specMeAdded = nil end
+    safeNotify("Spectate", "OFF", 2)
+end
+
+local function startSpectate(p)
+    spectateTarget = p
+    spectateOn = true
+    local function setCam()
+        if not spectateOn then return end
+        p = spectateTarget
+        if not p or not p.Character then return end
+        local hum = p.Character:FindFirstChildOfClass("Humanoid")
+        if hum then Workspace.CurrentCamera.CameraSubject = hum end
+    end
+    if specTargetAdded then specTargetAdded:Disconnect() end
+    specTargetAdded = p.CharacterAdded:Connect(function() task.wait(0.1); setCam() end)
+    if specMeAdded then specMeAdded:Disconnect() end
+    specMeAdded = localPlayer.CharacterAdded:Connect(function() task.wait(0.2); setCam() end)
+    setCam()
+    safeNotify("Spectate", "ON: "..p.Name, 2)
+end
+
+TabPlayer:Toggle({
+    Title = "Spectate Selected",
+    Desc  = "ดูผู้เล่นที่เลือก",
+    Value = false,
+    Callback = function(v)
+        if v then
+            local p = getPlayerByName(selectedName)
+            if not p then safeNotify("Spectate","Player not found",2); return end
+            if p == localPlayer then safeNotify("Spectate","เลือกคนอื่นที่ไม่ใช่ตัวเอง",3); return end
+            startSpectate(p)
+        else
+            stopSpectate()
+        end
+    end
+})
+
+-- auto refresh on join/leave
+Players.PlayerAdded:Connect(function()
+    Dropdown:SetList(buildPlayerList())
+end)
+Players.PlayerRemoving:Connect(function(rem)
+    Dropdown:SetList(buildPlayerList())
+    if selectedName == rem.Name then
+        selectedName = localPlayer.Name
+        Dropdown:SetValue(selectedName)
+    end
+    if spectateOn and spectateTarget == rem then
+        stopSpectate()
+    end
+end)
+
+-- ---------- Final ----------
+safeNotify("RepintX", "UI Loaded. Press LeftCtrl to toggle.", 4)
