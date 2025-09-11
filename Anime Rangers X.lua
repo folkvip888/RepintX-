@@ -6,7 +6,7 @@ local Library = loadstring(game:HttpGet(
 ))()
 
 local Window = Library:Window({
-    Title = "RepintX - 𝓐𝓷𝓲𝓶𝓮 𝓡𝓪𝓷𝓰𝓻𝓼 𝓧 ",
+    Title = "RepintX - Anime Rangers X ",
     Desc = "",
     Icon = 105059922903197,
     Theme = "Dark",
@@ -683,4 +683,5 @@ LobbyTab:Button({
     end
 })
 end
+
 
