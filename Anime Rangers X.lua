@@ -6,8 +6,8 @@ local Library = loadstring(game:HttpGet(
 ))()
 
 local Window = Library:Window({
-    Title = "Auto UI",
-    Desc = "AutoPlay | Upgrade | Speed | Vote | PlayerOnly | Webhooks",
+    Title = "RepintX - 𝓐𝓷𝓲𝓶𝓮 𝓡𝓪𝓷𝓰𝓻𝓼 𝓧 ",
+    Desc = "",
     Icon = 105059922903197,
     Theme = "Dark",
     Config = { Keybind = Enum.KeyCode.LeftControl, Size = UDim2.new(0, 540, 0, 440) },
@@ -683,3 +683,4 @@ LobbyTab:Button({
     end
 })
 end
+
