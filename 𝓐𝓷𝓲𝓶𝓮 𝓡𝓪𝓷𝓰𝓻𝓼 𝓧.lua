@@ -499,4 +499,187 @@ do
             end
         end
     })
+    --=====================================================
+-- ===================  TAB: LOBBY  ===================
+--=====================================================
+local LobbyTab = Window:Tab({ Title = "Lobby", Icon = "home" })
+
+-- ===== Shared refs (ปลอดภัยถ้าเคยประกาศไว้แล้ว) =====
+local RS = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+
+local Remote = RS:WaitForChild("Remote")
+local RemoteServer = Remote:WaitForChild("Server")
+
+-- ============= Helper: Safe fire server =============
+local function safeFire(desc, fn)
+    local ok, err = pcall(fn)
+    if ok then
+        print("✅ "..desc.." — success")
+    else
+        warn("❌ "..desc.." — failed:", err)
+    end
+end
+
+--=====================================================
+-- ===============  SECTION: QUEST/PASS  ==============
+--=====================================================
+LobbyTab:Section({ Title = "Quest & Battle Pass" })
+
+-- Auto Claim Quest (ครั้งเดียวเมื่อกด)
+LobbyTab:Button({
+    Title = "Claim All Daily Quests (ครั้งเดียว)",
+    Desc  = "พยายามเคลมเควสทั้งหมด (DailyQuest) แบบรวม",
+    Callback = function()
+        -- เส้นทางข้อมูลผู้เล่น
+        local playerData = RS:WaitForChild("Player_Data")
+        local myData = playerData:FindFirstChild(LocalPlayer.Name)
+        if not myData then
+            warn("[ClaimQuest] ไม่พบข้อมูลผู้เล่นใน ReplicatedStorage/Player_Data")
+            return
+        end
+        local dailyQuest = myData:FindFirstChild("DailyQuest")
+        if not dailyQuest then
+            warn("[ClaimQuest] ไม่พบโฟลเดอร์ DailyQuest")
+            return
+        end
+
+        -- Remote: Remote.Server.Gameplay.QuestEvent
+        local questEvent = RemoteServer:WaitForChild("Gameplay"):WaitForChild("QuestEvent")
+
+        -- 1) ลองโหมด 'ClaimAll' ตรง ๆ (บางเกมรองรับแค่นี้พอ)
+        safeFire("QuestEvent('ClaimAll')", function()
+            questEvent:FireServer("ClaimAll")
+        end)
+
+        -- 2) ถ้าเกมต้องการระบุเควสทีละอัน ให้ไล่ยิงทีละตัว (กันไว้)
+        for _, q in ipairs(dailyQuest:GetChildren()) do
+            safeFire(("QuestEvent('ClaimAll', %s)"):format(q.Name), function()
+                questEvent:FireServer("ClaimAll", q)
+            end)
+            task.wait(0.05)
+        end
+    end
+})
+
+-- Auto Claim Battle Pass (ครั้งเดียวเมื่อกด)
+LobbyTab:Button({
+    Title = "Claim All Battle Pass (ครั้งเดียว)",
+    Desc  = "เคลม Battle Pass ทั้งหมด",
+    Callback = function()
+        local claimBp = RS:WaitForChild("Remote"):WaitForChild("Events"):WaitForChild("ClaimBp")
+        safeFire("ClaimBp('Claim All')", function()
+            claimBp:FireServer("Claim All")
+        end)
+    end
+})
+
+--=====================================================
+-- =================  SECTION: CODES  =================
+--=====================================================
+LobbyTab:Section({ Title = "Redeem Codes" })
+
+-- รายการโค้ดที่ให้มา (แก้/เพิ่มได้)
+local BUILTIN_CODES = {
+    "CyclopsSoulMine!",
+    "CelestialMageOp67",
+    "FairyPatch67",
+    "FairyTalePeak!",
+    "6.5UpdateIsReal!!!",
+    "FallPart2!?!",
+    "Sorry4Delay",
+    "ReallySorry4Delay",
+    "FollowUpTheInsta!",
+    "FixPatchSJW!",
+    "SorryForPassiveDelay!",
+    "SoloPeakLeveling!",
+    "NewRaidAndEvos?!",
+    "IgrisIsMetaAgain!!",
+    "SorryForAllTheIssues!",
+    "TYFORTHESUPPORT!?",
+    "FallEvent?!",
+    "SorryForLate!",
+    "NewRangerUnit!",
+    "PityOnRanger?!",
+    "NewCode!?",
+    "BerserkUpdate?!",
+    "SorryForLate!",
+    "NewDivineTrials!",
+    "UpgradeInFieldFix!",
+    "Shutdown2!",
+    "DBZUpdate!",
+    "NewPortals?!",
+    "GTBossEvent!!",
+    "SorryForDelayz!",
+    "LBreset!",
+    "MinorChanges!",
+    "Dungeons!",
+    "SAOUpd!",
+    "RiftMode!",
+    "EzSoulFrags",
+    "CraftingFix!",
+    "SmartRejoin",
+    "S3Battlepass!",
+    "StatBoosters!",
+    "GraveyardRaid!",
+    "ChainsawUpd!",
+    "SneakCode!",
+    "3xALLMODES!!",
+    "YOUTUBEBACK!!",
+    "BRANDONTHEBEST!",
+    "TYBW2!",
+    "QOL2!",
+    "ARXBLEACH!",
+    "Srry4Shutdown",
+    "SmallFixs",
+    "!FixBossRushShop",
+    "!TYBW",
+    "!MattLovesARX2",
+    "!RaitoLovesARX",
+    "!BrandonTheBest",
+    "Sorry4AutoTraitRoll",
+    "Sorry4EvoUnits",
+    "SorryDelay!!!",
+    "SummerEvent!",
+    "2xWeekEnd!",
+    "Sorry4Quest",
+    "SorryRaids",
+    "BOSSTAKEOVER",
+    "RAIDS",
+    "BizzareUpdate2!",
+    "Sorry4Delays",
+    "JoJo Part 1",
+    "NewLobby",
+    "Instant Trait",
+    "HBDTanny",
+    "PortalsFix",
+    "UPDATE 1.5",
+    "THANKYOU4PATIENCE",
+}
+LobbyTab:Button({
+    Title = "Redeem All (Built-in List)",
+    Desc  = "จะลองใช้โค้ดทั้งหมดในลิสต์นี้ (หน่วงเล็กน้อยต่อโค้ด)",
+    Callback = function()
+        local codeRemote = RemoteServer:WaitForChild("Lobby"):WaitForChild("Code")
+
+        -- กรองค่าว่าง/ซ้ำ
+        local seen, codes = {}, {}
+        for _, c in ipairs(BUILTIN_CODES) do
+            local s = tostring(c or ""):gsub("^%s+", ""):gsub("%s+$", "")
+            if s ~= "" and not seen[s] then
+                seen[s] = true
+                table.insert(codes, s)
+            end
+        end
+
+        for i, code in ipairs(codes) do
+            safeFire(("Lobby.Code('%s')"):format(code), function()
+                codeRemote:FireServer(code)
+            end)
+            task.wait(0.35) -- เว้นจังหวะเล็กน้อย กันสแปม/คูลดาวน์
+        end
+        print(("✅ Redeem All — done (%d codes)"):format(#codes))
+    end
+})
 end
