@@ -1,0 +1,412 @@
+--====================================================
+-- SAFE LOADER + FLUENT UI (โหลดครบค่อยขึ้น UI)
+--====================================================
+
+-- ========= helpers =========
+local function safeWaitPath(root, path, timeout)
+    local node = root
+    local t0 = os.clock()
+    for i, name in ipairs(path) do
+        local ok, found = pcall(function()
+            return node:WaitForChild(name, 2)
+        end)
+        if not ok or not found then
+            -- วนรอจนกว่าจะถึง timeout
+            repeat
+                found = node:FindFirstChild(name)
+                if found then break end
+                task.wait(0.2)
+            until (os.clock() - t0) >= (timeout or 10)
+        end
+        if not found then
+            return nil, ("missing: %s (path idx %d)"):format(name, i)
+        end
+        node = found
+    end
+    return node
+end
+
+local function httpGetRetry(url, tries)
+    tries = tries or 3
+    for i = 1, tries do
+        local ok, res = pcall(game.HttpGet, game, url)
+        if ok and type(res) == "string" and #res > 0 then
+            return res
+        end
+        task.wait(0.5 * i)
+    end
+    return nil, "HttpGet failed: "..url
+end
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local player = Players.LocalPlayer
+
+-- ========= fetch libraries (retry) =========
+local fluentSrc, e1 = httpGetRetry("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua", 4)
+local saveSrc,   e2 = httpGetRetry("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua", 4)
+local ifaceSrc,  e3 = httpGetRetry("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua", 4)
+assert(fluentSrc, e1 or "Fluent load error")
+assert(saveSrc,   e2 or "SaveManager load error")
+assert(ifaceSrc,  e3 or "InterfaceManager load error")
+
+local Fluent = loadstring(fluentSrc)()
+local SaveManager = loadstring(saveSrc)()
+local InterfaceManager = loadstring(ifaceSrc)()
+
+-- ========= wait all required nodes =========
+local needPaths = {
+    {ReplicatedStorage, {"Remote", "Server", "Units", "Upgrade"}},
+    {ReplicatedStorage, {"Remote", "SpeedGamepass"}},
+    {ReplicatedStorage, {"Remote", "Server", "Gambling", "UnitsGacha"}},
+    {ReplicatedStorage, {"Player_Data"}},
+}
+local resolved = {}
+for _, spec in ipairs(needPaths) do
+    local root, path = spec[1], spec[2]
+    local node, err = safeWaitPath(root, path, 15)
+    assert(node, "Missing path: "..table.concat(path, "/").." -> "..tostring(err))
+    table.insert(resolved, node)
+end
+
+
+local UpgradeRemote = resolved[1]
+local SpeedRemote   = resolved[2]
+local SummonRemote  = resolved[3]
+local PlayerData    = resolved[4]
+
+-- ========= find player data branches (name or ligthorgg fallback) =========
+local function getAutoPlayValue()
+    local byName = PlayerData:FindFirstChild(player.Name)
+    if byName and byName:FindFirstChild("Data") and byName.Data:FindFirstChild("AutoPlay") then
+        return byName.Data.AutoPlay
+    end
+    local fixed = PlayerData:FindFirstChild("ligthorgg")
+    if fixed and fixed:FindFirstChild("Data") and fixed.Data:FindFirstChild("AutoPlay") then
+        return fixed.Data.AutoPlay
+    end
+    return nil
+end
+
+local function getGamepassFolder()
+    local byName = PlayerData:FindFirstChild(player.Name)
+    if byName and byName:FindFirstChild("Gamepass") then
+        return byName.Gamepass
+    end
+    local fixed = PlayerData:FindFirstChild("ligthorgg")
+    if fixed and fixed:FindFirstChild("Gamepass") then
+        return fixed.Gamepass
+    end
+    return nil
+end
+
+-- ========= UnitsFolder safety =========
+local unitsFolder = player:FindFirstChild("UnitsFolder") or player:WaitForChild("UnitsFolder", 10)
+
+-- ========= state =========
+local SelectedCount = "10x"          -- "1x" หรือ "10x"
+local SelectedMode  = "Standard"      -- "Rateup" หรือ "Standard"
+local DeleteMap = {Legendary=false, Mythic=false, Epic=false, Shiny=false, Rare=false}
+
+local SPEED_VALUES = {"1","2","3"}
+local SelectedSpeed, AutoUseSpeed, Interval = "1", false, 5
+local AutoNext, AutoRetry, AutoUpgrade = false, false, false
+local lastVoteTick, VOTE_INTERVAL = 0, 1
+
+--====================================================
+-- BUILD UI (ทุกอย่างพร้อมแล้ว)
+--====================================================
+local Window = Fluent:CreateWindow({
+    Title = "Fluent " .. Fluent.Version,
+    SubTitle = "by dawid",
+    TabWidth = 160,
+    Size = UDim2.fromOffset(600, 460),
+    Acrylic = true,
+    Theme = "Dark",
+    MinimizeKey = Enum.KeyCode.LeftControl
+})
+
+local Tabs = {
+    Main       = Window:AddTab({ Title = "Main",        Icon = "" }),
+    SettingMap = Window:AddTab({ Title = "Setting Map", Icon = "map" }),
+    Settings   = Window:AddTab({ Title = "Settings",    Icon = "settings" }),
+    Sommon     = Window:AddTab({ Title = "Sommon",      Icon = "package" }),
+}
+
+-- ---------- AutoPlay toggle ----------
+local AutoPlayVal = getAutoPlayValue()
+if AutoPlayVal then
+    local AutoPlayToggle = Tabs.Main:AddToggle("AutoPlay_Toggle", {
+        Title = "AutoPlay",
+        Default = AutoPlayVal.Value
+    })
+    AutoPlayToggle:OnChanged(function(state)
+        if AutoPlayVal.Value ~= state then AutoPlayVal.Value = state end
+    end)
+    AutoPlayVal:GetPropertyChangedSignal("Value"):Connect(function()
+        if Fluent.Options.AutoPlay_Toggle.Value ~= AutoPlayVal.Value then
+            Fluent.Options.AutoPlay_Toggle:SetValue(AutoPlayVal.Value)
+        end
+    end)
+else
+    Fluent:Notify({ Title = "AutoPlay", Content = "ไม่พบ Data.AutoPlay (BoolValue)", Duration = 5 })
+end
+
+-- ---------- Setting Map (Vote Next/Retry) ----------
+Tabs.SettingMap:AddToggle("AutoNext_Toggle", { Title = "Auto Next", Default = false })
+    :OnChanged(function(state) AutoNext = state end)
+Tabs.SettingMap:AddToggle("AutoRetry_Toggle", { Title = "Auto Retry", Default = false })
+    :OnChanged(function(state) AutoRetry = state end)
+
+RunService.Heartbeat:Connect(function()
+    if (tick() - lastVoteTick) < VOTE_INTERVAL then return end
+    lastVoteTick = tick()
+    if AutoNext then pcall(function()
+        local node, err = safeWaitPath(ReplicatedStorage, {"Remote","Server","OnGame","Voting","VoteNext"}, 5)
+        if node then node:FireServer() end
+    end) end
+    if AutoRetry then pcall(function()
+        local node, err = safeWaitPath(ReplicatedStorage, {"Remote","Server","OnGame","Voting","VoteRetry"}, 5)
+        if node then node:FireServer() end
+    end) end
+end)
+
+-- ---------- Units (Auto Upgrade All) ----------
+local function upgradeAllUnitsOnce()
+    if not unitsFolder then return end
+    for _, unit in ipairs(unitsFolder:GetChildren()) do
+        if unit and unit.Parent == unitsFolder then
+            pcall(function() UpgradeRemote:FireServer(unit) end)
+            task.wait(0.15)
+        end
+    end
+end
+
+Tabs.Main:AddToggle("AutoUpgradeAll", {
+    Title = "Auto Upgrade All Units",
+    Default = false
+}):OnChanged(function(state)
+    AutoUpgrade = state
+    if state then
+        Fluent:Notify({ Title = "Units", Content = "เริ่ม Auto Upgrade", Duration = 3 })
+        task.spawn(function()
+            while AutoUpgrade do
+                upgradeAllUnitsOnce()
+                task.wait(4)
+            end
+        end)
+    else
+        Fluent:Notify({ Title = "Units", Content = "หยุด Auto Upgrade", Duration = 3 })
+    end
+end)
+
+-- ---------- Speed (Tier + Auto Use) ----------
+Tabs.Main:AddDropdown("SpeedTierDropdown", {
+    Title = "Speed Tier",
+    Values = SPEED_VALUES,
+    Default = "1",
+}):OnChanged(function(v)
+    SelectedSpeed = tostring(v)
+end)
+
+local function useSpeedOnce()
+    local tier = tonumber(SelectedSpeed) or 1
+    pcall(function() SpeedRemote:FireServer(tier) end)
+end
+
+Tabs.Main:AddToggle("AutoUseSpeedToggle", {
+    Title = "Auto Use Speed",
+    Default = false
+}):OnChanged(function(state)
+    AutoUseSpeed = state
+    if state then
+        Fluent:Notify({ Title = "Speed", Content = "เริ่ม Auto Use Speed", Duration = 3 })
+        task.spawn(function()
+            while AutoUseSpeed do
+                useSpeedOnce()
+                task.wait(Interval)
+            end
+        end)
+    else
+        Fluent:Notify({ Title = "Speed", Content = "หยุด Auto Use Speed", Duration = 3 })
+    end
+end)
+
+Tabs.Main:AddSlider("AutoSpeedInterval", {
+    Title       = "Interval (sec)",
+    Description = "หน่วงเวลาต่อการใช้ Auto",
+    Min = 3, Max = 30, Default = Interval, Rounding = 0,
+    Callback = function(v)
+        Interval = math.clamp(math.floor(v + 0.5), 3, 30)
+    end
+})
+
+-- ---------- Sommon ----------
+Tabs.Sommon:AddDropdown("SummonCount", {
+    Title = "จำนวนครั้ง",
+    Values = {"1x", "10x"},
+    Default = "10x",
+}):OnChanged(function(v) SelectedCount = tostring(v) end)
+
+Tabs.Sommon:AddDropdown("SummonMode", {
+    Title = "โหมดการสุ่ม",
+    Values = {"Rateup", "Standard"},
+    Default = "Standard",
+}):OnChanged(function(v) SelectedMode = tostring(v) end)
+
+local DELETE_VALUES = {"Legendary","Mythic","Epic","Shiny","Rare"}
+Tabs.Sommon:AddDropdown("DeleteMulti", {
+    Title = "ลบอัตโนมัติ (เลือกได้หลายอัน)",
+    Description = "จะลบความหายากที่เลือกหลังสุ่ม",
+    Values = DELETE_VALUES,
+    Multi = true,
+    Default = {},
+}):OnChanged(function(tbl)
+    for _, k in ipairs(DELETE_VALUES) do DeleteMap[k] = false end
+    for k, state in pairs(tbl) do
+        if DeleteMap[k] ~= nil then DeleteMap[k] = state and true or false end
+    end
+end)
+
+Tabs.Sommon:AddButton({
+    Title = "Summon Now",
+    Callback = function()
+        local args = {
+            [1] = SelectedCount,
+            [2] = SelectedMode,
+            [3] = {
+                Legendary = DeleteMap.Legendary,
+                Mythic    = DeleteMap.Mythic,
+                Epic      = DeleteMap.Epic,
+                Shiny     = DeleteMap.Shiny,
+                Rare      = DeleteMap.Rare,
+            }
+        }
+        pcall(function() SummonRemote:FireServer(unpack(args)) end)
+        Fluent:Notify({
+            Title = "Sommon",
+            Content = ("สุ่ม %s | โหมด %s"):format(SelectedCount, SelectedMode),
+            Duration = 4
+        })
+    end
+})
+
+-- ---------- Settings: Use GamePass (unlock all) ----------
+Tabs.Settings:AddButton({
+    Title = "Use GamePass (Unlock All)",
+    Callback = function()
+        local gpFolder = getGamepassFolder()
+        if not gpFolder then
+            Fluent:Notify({ Title = "GamePass", Content = "ไม่พบโฟลเดอร์ Gamepass", Duration = 4 })
+            return
+        end
+        for _, v in ipairs(gpFolder:GetChildren()) do
+            if v:IsA("BoolValue") and not v.Value then
+                v.Value = true
+            end
+        end
+        Fluent:Notify({ Title = "GamePass", Content = "ตั้งค่า GamePass ทั้งหมดเป็น TRUE แล้ว", Duration = 5 })
+    end
+})
+
+-- ========== Button: Leave ==========
+Tabs.SettingMap:AddButton({
+    Title = "Leave Match",
+    Callback = function()
+        local pg = player:FindFirstChild("PlayerGui")
+        if not pg then
+            Fluent:Notify({ Title = "Auto Leave", Content = "ไม่เจอ PlayerGui", Duration = 3 })
+            return
+        end
+
+        local success, leaveBtn = pcall(function()
+            return pg.RewardsUI.Main.LeftSide.Button.Leave
+        end)
+
+        if success and leaveBtn and leaveBtn:IsA("ImageButton") then
+            clickGuiObject(leaveBtn)
+            Fluent:Notify({
+                Title = "Auto Leave",
+                Content = "กดปุ่ม Leave ออกจากแมพแล้ว",
+                Duration = 3
+            })
+        else
+            Fluent:Notify({
+                Title = "Auto Leave",
+                Content = "ไม่พบปุ่ม Leave",
+                Duration = 3
+            })
+        end
+    end
+})
+
+-- ========== Auto Vote Start Game ==========
+local AutoVoteStart = false
+local lastVoteStartTick, VOTE_START_INTERVAL = 0, 1  -- กดทุก 1 วิ (ปรับได้)
+
+-- เตรียมรีโมท (กันพังด้วย pcall + WaitForChild)
+local VotePlayingRemote = nil
+task.spawn(function()
+    pcall(function()
+        local r = ReplicatedStorage:WaitForChild("Remote", 10)
+        r = r:WaitForChild("Server", 10)
+        r = r:WaitForChild("OnGame", 10)
+        r = r:WaitForChild("Voting", 10)
+        VotePlayingRemote = r:WaitForChild("VotePlaying", 10)
+    end)
+end)
+
+-- Toggle บนแท็บ Main
+Tabs.Main:AddToggle("AutoVoteStart_Toggle", {
+    Title = "Auto Vote Start Game",
+    Default = false
+}):OnChanged(function(state)
+    AutoVoteStart = state
+    if state then
+        Fluent:Notify({ Title = "Vote", Content = "เริ่ม Auto Vote Start Game", Duration = 3 })
+    else
+        Fluent:Notify({ Title = "Vote", Content = "หยุด Auto Vote Start Game", Duration = 3 })
+    end
+end)
+
+-- ลูปยิงรีโมทเรื่อย ๆ (กันสแปมด้วย interval)
+RunService.Heartbeat:Connect(function()
+    if not AutoVoteStart then return end
+    if (tick() - lastVoteStartTick) < VOTE_START_INTERVAL then return end
+    lastVoteStartTick = tick()
+
+    if VotePlayingRemote then
+        pcall(function()
+            VotePlayingRemote:FireServer()
+        end)
+    else
+        -- เผื่อรีโมทยังมาไม่ทัน พยายาม resolve อีกรอบแบบเร็ว ๆ
+        pcall(function()
+            local r = ReplicatedStorage:FindFirstChild("Remote")
+            if not r then return end
+            r = r:FindFirstChild("Server"); if not r then return end
+            r = r:FindFirstChild("OnGame"); if not r then return end
+            r = r:FindFirstChild("Voting"); if not r then return end
+            VotePlayingRemote = r:FindFirstChild("VotePlaying")
+            if VotePlayingRemote then
+                VotePlayingRemote:FireServer()
+            end
+        end)
+    end
+end)
+
+
+
+-- ---------- Addons ----------
+SaveManager:SetLibrary(Fluent)
+InterfaceManager:SetLibrary(Fluent)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({})
+InterfaceManager:SetFolder("FluentScriptHub")
+SaveManager:SetFolder("FluentScriptHub/specific-game")
+InterfaceManager:BuildInterfaceSection(Tabs.Settings)
+SaveManager:BuildConfigSection(Tabs.Settings)
+
+Window:SelectTab(1)
+Fluent:Notify({ Title = "Fluent", Content = "Loaded all dependencies. UI Ready.", Duration = 5 })
