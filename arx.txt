@@ -1,7 +1,8 @@
 --====================================================
--- UI (Obsidian/Linoria) + Event tab + Game tab (All-in-One)
+-- UI (Obsidian/Linoria) + Event + Game + Create Room + UI Settings (All-in-One)
 --  - Event: Auto Restart @2/2, Auto Hide Rewards UI, Auto Play Swarm Event
 --  - Game : Auto Retry / Auto Next / Auto Vote Game / AutoPlay (Bool)
+--  - Create Room: Map/Chapter (with Scrolling), Difficulty, FriendOnly, AutoStart
 --====================================================
 
 -- libs
@@ -24,15 +25,16 @@ local Window = Library:CreateWindow({
 })
 
 local Tabs = {
-	Game   = Window:AddTab("Game", "gamepad-2"),     -- รีโมทโหวต + AutoPlay
-	Event  = Window:AddTab("Event", "activity"),     -- ย้ายฟังก์ชันหลักมาที่นี่
+	Game   = Window:AddTab("Game", "gamepad-2"),
+	Event  = Window:AddTab("Event", "activity"),
+	["Create Room"] = Window:AddTab("Create Room", "plus-square"),
 	["UI Settings"] = Window:AddTab("UI Settings", "settings"),
 }
 
 local Options, Toggles = Library.Options, Library.Toggles
 
 --====================================================
--- Helpers (ปลอดภัย / ไม่เลื่อนสกรอล์)
+-- Helpers (safe waits / click / value set)
 --====================================================
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -73,7 +75,7 @@ local function setBoolValueSafely(valObj, bool)
 	pcall(function() if valObj.value ~= nil then valObj.value = bool end end)
 end
 
--- ===== Remote helpers (Game votes / Restart 2/2) =====
+-- Vote remotes
 local function getVoteRemote(key)
 	-- key: "VoteRetry" | "VoteNext" | "VotePlaying"
 	local ok, r = pcall(function()
@@ -105,15 +107,10 @@ local function spamVote(remoteName, duration, interval)
 end
 
 --====================================================
--- ============  EVENT TAB (ย้ายมาที่นี่)  ===========
---   - Auto Restart at 2/2
---   - Auto Hide Rewards UI
---   - Auto Play Swarm Event
+-- ===================== EVENT TAB ===================
 --====================================================
 
--------------------------
--- Auto Restart at 2/2 --
--------------------------
+-- Auto Restart @ 2/2
 local AutoGB = Tabs.Event:AddLeftGroupbox("Auto Restart / Vote")
 
 AutoGB:AddToggle("AutoRestartTwoOfTwo", {
@@ -125,13 +122,11 @@ AutoGB:AddToggle("AutoRestartTwoOfTwo", {
 AutoGB:AddSlider("RetryDuration", {
     Text = "Spam Duration (sec)",
     Default = 10, Min = 3, Max = 30, Rounding = 0,
-    Tooltip = "ระยะเวลาสแปม VoteRetry",
 })
 
 AutoGB:AddSlider("RetryInterval", {
     Text = "Spam Interval (sec)",
     Default = 0.25, Min = 0.05, Max = 1.0, Rounding = 2,
-    Tooltip = "ช่วงเวลาระหว่างช็อต",
 })
 
 AutoGB:AddLabel("Hotkey"):AddKeyPicker("AutoRestartKey", {
@@ -146,7 +141,6 @@ Options.AutoRestartKey:OnClick(function()
     Toggles.AutoRestartTwoOfTwo:SetValue(not Toggles.AutoRestartTwoOfTwo.Value)
 end)
 
--- Runner
 local AutoRestartState = { running = false, token = 0 }
 
 local function startAutoRestartWatcher()
@@ -163,20 +157,17 @@ local function startAutoRestartWatcher()
                 pcall(function() pg.Settings.Enabled = true end)
                 task.wait(0.3)
 
-                -- กด Restart Match (ไม่เลื่อน scroll)
+                -- Restart Match (ไม่ต้องสกรอล์)
                 local restartClick = safeWaitPath(
                     pg,
                     {"Settings","Main","Base","Space","ScrollingFrame","Restart Match","Click"},
                     3
                 )
-                if restartClick then
-                    clickGuiObject(restartClick)
-                end
+                if restartClick then clickGuiObject(restartClick) end
 
-                -- สแปมโหวต Retry
+                -- Spam VoteRetry
                 spamVote("VoteRetry", Options.RetryDuration.Value, Options.RetryInterval.Value)
 
-                -- กันกดซ้ำจนกว่า Wave จะเปลี่ยน
                 repeat
                     if not (AutoRestartState.running and myToken == AutoRestartState.token) then break end
                     task.wait(0.75)
@@ -206,12 +197,9 @@ Toggles.AutoRestartTwoOfTwo:OnChanged(function()
         Library:Notify("Auto Restart at 2/2: OFF", 3)
     end
 end)
-
 if Toggles.AutoRestartTwoOfTwo.Value then startAutoRestartWatcher() end
 
---------------------------
--- Auto Hide Rewards UI --
---------------------------
+-- Auto Hide Rewards UI
 local AutoHideGB = Tabs.Event:AddRightGroupbox("Auto Hide")
 
 AutoHideGB:AddToggle("AutoHideRewards", {
@@ -250,19 +238,14 @@ end
 
 Toggles.AutoHideRewards:OnChanged(function()
     if Toggles.AutoHideRewards.Value then
-        startAutoHideWatcher()
-        Library:Notify("Auto Hide Rewards UI: ON", 3)
+        startAutoHideWatcher(); Library:Notify("Auto Hide Rewards UI: ON", 3)
     else
-        stopAutoHideWatcher()
-        Library:Notify("Auto Hide Rewards UI: OFF", 3)
+        stopAutoHideWatcher(); Library:Notify("Auto Hide Rewards UI: OFF", 3)
     end
 end)
-
 if Toggles.AutoHideRewards.Value then startAutoHideWatcher() end
 
--------------------------
 -- Auto Play Swarm Event
--------------------------
 local PlayGB = Tabs.Event:AddRightGroupbox("Play Event")
 
 PlayGB:AddToggle("AutoPlayEvent", {
@@ -274,11 +257,9 @@ PlayGB:AddToggle("AutoPlayEvent", {
 PlayGB:AddSlider("PlayCooldown", {
     Text = "Cooldown (sec)",
     Default = 3, Min = 1, Max = 15, Rounding = 0,
-    Tooltip = "กันการกดซ้ำรัว ๆ",
 })
 
 local function tryOpenSwarmEventMenu()
-    -- HUD.MenuFrame.RightSide["Swarm Event"]
     local openBtn = safeWaitPath(pg, {"HUD","MenuFrame","RightSide","Swarm Event"}, 3)
     if openBtn and openBtn.Visible then
         local clickObj = openBtn:FindFirstChild("Click") or openBtn
@@ -289,7 +270,6 @@ local function tryOpenSwarmEventMenu()
 end
 
 local function tryPressSwarmEventPlay()
-    -- PlayerGui["Swarm Event"].Main.Tabs.Play
     local playBtn = safeWaitPath(pg, {"Swarm Event","Main","Tabs","Play"}, 3)
     if playBtn and playBtn.Visible then
         local clickable = playBtn:FindFirstChild("Click") or playBtn
@@ -334,51 +314,28 @@ end
 
 Toggles.AutoPlayEvent:OnChanged(function()
     if Toggles.AutoPlayEvent.Value then
-        startAutoPlayWatcher()
-        Library:Notify("Auto Play Swarm Event: ON", 3)
+        startAutoPlayWatcher(); Library:Notify("Auto Play Swarm Event: ON", 3)
     else
-        stopAutoPlayWatcher()
-        Library:Notify("Auto Play Swarm Event: OFF", 3)
+        stopAutoPlayWatcher(); Library:Notify("Auto Play Swarm Event: OFF", 3)
     end
 end)
-
 if Toggles.AutoPlayEvent.Value then startAutoPlayWatcher() end
 
 --====================================================
--- ===================== GAME TAB ====================
---   - Auto Retry (VoteRetry)
---   - Auto Next (VoteNext)
---   - Auto Vote Game (VotePlaying)
---   - AutoPlay Bool (ReplicatedStorage.Player_Data.ligthorgg.Data.AutoPlay)
+-- ====================== GAME TAB ===================
 --====================================================
 
 local GameGB = Tabs.Game:AddLeftGroupbox("Voting Remotes")
 
-GameGB:AddToggle("AutoRetry", {
-	Text = "Auto Retry ",
-	Tooltip = "",
-	Default = false,
-})
-
-GameGB:AddToggle("AutoNext", {
-	Text = "Auto Next ",
-	Tooltip = "",
-	Default = false,
-})
-
-GameGB:AddToggle("AutoVotePlaying", {
-	Text = "Auto Vote Game",
-	Tooltip = "",
-	Default = false,
-})
+GameGB:AddToggle("AutoRetry", { Text = "Auto Retry", Default = false })
+GameGB:AddToggle("AutoNext",  { Text = "Auto Next",  Default = false })
+GameGB:AddToggle("AutoVotePlaying", { Text = "Auto Vote Game", Default = false })
 
 GameGB:AddSlider("GameVoteInterval", {
 	Text = "Remote Interval (sec)",
 	Default = 1.0, Min = 0.1, Max = 5.0, Rounding = 2,
-	Tooltip = "หน่วงเวลาระหว่างการยิงแต่ละครั้ง",
 })
 
--- Watchers สำหรับรีโมททั้งสาม
 local VoteState = {
 	Retry = {running=false, token=0},
 	Next  = {running=false, token=0},
@@ -409,42 +366,22 @@ local function stopVoteLoop(which)
 	state.running = false
 end
 
-Toggles.AutoRetry:OnChanged(function()
-	if Toggles.AutoRetry.Value then
-		startVoteLoop("Retry","VoteRetry")
-		Library:Notify("Auto Retry: ON", 3)
-	else
-		stopVoteLoop("Retry")
-		Library:Notify("Auto Retry: OFF", 3)
-	end
+Toggles.AutoRetry:OnChanged(function(v)
+	if v then startVoteLoop("Retry","VoteRetry") else stopVoteLoop("Retry") end
+	Library:Notify(("Auto Retry: %s"):format(v and "ON" or "OFF"), 2)
 end)
 
-Toggles.AutoNext:OnChanged(function()
-	if Toggles.AutoNext.Value then
-		startVoteLoop("Next","VoteNext")
-		Library:Notify("Auto Next: ON", 3)
-	else
-		stopVoteLoop("Next")
-		Library:Notify("Auto Next: OFF", 3)
-	end
+Toggles.AutoNext:OnChanged(function(v)
+	if v then startVoteLoop("Next","VoteNext") else stopVoteLoop("Next") end
+	Library:Notify(("Auto Next: %s"):format(v and "ON" or "OFF"), 2)
 end)
 
-Toggles.AutoVotePlaying:OnChanged(function()
-	if Toggles.AutoVotePlaying.Value then
-		startVoteLoop("Play","VotePlaying")
-		Library:Notify("Auto Vote Game: ON", 3)
-	else
-		stopVoteLoop("Play")
-		Library:Notify("Auto Vote Game: OFF", 3)
-	end
+Toggles.AutoVotePlaying:OnChanged(function(v)
+	if v then startVoteLoop("Play","VotePlaying") else stopVoteLoop("Play") end
+	Library:Notify(("Auto Vote Game: %s"):format(v and "ON" or "OFF"), 2)
 end)
 
--- Auto start if default true
-if Toggles.AutoRetry.Value then startVoteLoop("Retry","VoteRetry") end
-if Toggles.AutoNext.Value then startVoteLoop("Next","VoteNext") end
-if Toggles.AutoVotePlaying.Value then startVoteLoop("Play","VotePlaying") end
-
--- AutoPlay Bool (true=open / false=close)
+-- AutoPlay Bool
 local GameRight = Tabs.Game:AddRightGroupbox("AutoPlay Toggle")
 
 GameRight:AddToggle("AutoPlayBool", {
@@ -454,7 +391,7 @@ GameRight:AddToggle("AutoPlayBool", {
 })
 
 local function setAutoPlayBool(enabled)
-	local node = safeWaitPath(ReplicatedStorage, {"Player_Data","ligthorgg","Data","AutoPlay"}, 10)
+	local node = safeWaitPath(ReplicatedStorage, {"Player_Data", player.Name, "Data", "AutoPlay"}, 10)
 	if node then
 		setBoolValueSafely(node, enabled)
 		Library:Notify(("AutoPlay set to %s"):format(tostring(enabled)), 3)
@@ -466,6 +403,232 @@ end
 Toggles.AutoPlayBool:OnChanged(function()
 	setAutoPlayBool(Toggles.AutoPlayBool.Value)
 end)
+
+--====================================================
+-- ==================== CREATE ROOM ==================
+--   - Map/Chapter Scrolling + Difficulty + FriendOnly + AutoStart
+--====================================================
+
+local function findFirstClickable(container)
+    if not container then return nil end
+    for _, d in ipairs(container:GetDescendants()) do
+        if d.Name == "Click" and (d:IsA("TextButton") or d:IsA("ImageButton")) then
+            return d
+        end
+        if d:IsA("TextButton") or d:IsA("ImageButton") then
+            return d
+        end
+    end
+    if container:IsA("TextButton") or container:IsA("ImageButton") then
+        return container
+    end
+    return nil
+end
+
+local function clickIfExists(pathParts, timeout)
+    local node = safeWaitPath(game, pathParts, timeout or 8)
+    if not node then return false end
+    local btn = findFirstClickable(node)
+    if not btn then return false end
+    clickGuiObject(btn)
+    return true
+end
+
+local function scrollIntoViewAndClick(sf, target)
+    if not (sf and target and sf:IsA("ScrollingFrame")) then return false end
+    local function clamp(n, a, b) if n < a then return a elseif n > b then return b else return n end end
+    local yInView = (target.AbsolutePosition.Y - sf.AbsolutePosition.Y) + sf.CanvasPosition.Y
+    local desired = yInView - (sf.AbsoluteSize.Y * 0.35)
+    local maxY = math.max(0, sf.AbsoluteCanvasSize.Y - sf.AbsoluteSize.Y)
+    sf.CanvasPosition = Vector2.new(0, clamp(desired, 0, maxY))
+    task.wait(0.06)
+    local btn = findFirstClickable(target)
+    if btn then clickGuiObject(btn); return true end
+    return false
+end
+
+local function scrollClickByName(sf, childName)
+    if not (sf and childName) then return false end
+    local target = sf:FindFirstChild(childName)
+    if not target then
+        for _, c in ipairs(sf:GetChildren()) do
+            if c.Name and c.Name:lower():find(childName:lower(), 1, true) then
+                target = c; break
+            end
+        end
+    end
+    if not target then return false end
+    return scrollIntoViewAndClick(sf, target)
+end
+
+local function chapterButtonName(mapKey, chapterNum)
+    return ("%s_Chapter%d"):format(mapKey, chapterNum)
+end
+
+local CreateCfg = {
+    Map = "OnePiece",
+    Chapter = 1,
+    FriendsOnly = false,
+    AutoStart = false,
+    Difficulty = "Normal",
+}
+
+local MAP_LIST = {
+    "Berserk","BizzareRace","ChainsawMan","DBZ2","JojoPart1",
+    "Namek","Naruto","OnePiece","OPM","SAO","SoloLeveling",
+    "SoulSociety","TokyoGhoul","DemonSlayer"
+}
+
+local function getAvailableMaps()
+    local maps, seen = {}, {}
+    for _, m in ipairs(MAP_LIST) do seen[m] = true; table.insert(maps, m) end
+    local sf = safeWaitPath(pg, {"PlayRoom","Main","GameStage","Main","Base","Story","ScrollingFrame"}, 0.8)
+    if sf then
+        for _, child in ipairs(sf:GetChildren()) do
+            if child.Name and child.Name ~= "UIListLayout" and child.Name ~= "UIPadding" then
+                if not seen[child.Name] then seen[child.Name]=true; table.insert(maps, child.Name) end
+            end
+        end
+    end
+    table.sort(maps)
+    return maps
+end
+
+local CR_Left  = Tabs["Create Room"]:AddLeftGroupbox("Setup")
+local CR_Right = Tabs["Create Room"]:AddRightGroupbox("Actions")
+
+local mapValues = getAvailableMaps()
+CR_Left:AddDropdown("CR_Map", {
+    Text = "Map (Story)",
+    Values = mapValues,
+    Default = CreateCfg.Map,
+})
+Options.CR_Map:OnChanged(function(v) CreateCfg.Map = v end)
+
+CR_Right:AddToggle("AutoPlayEvent", {
+    Text = "Auto Play Swarm Event",
+    Tooltip = "เปิด HUD > Swarm Event แล้วกด Play อัตโนมัติ",
+    Default = false,
+})
+
+local chapValues = {}; for i = 1, 10 do chapValues[i] = tostring(i) end
+CR_Left:AddDropdown("CR_Chapter", {
+    Text = "Chapter",
+    Values = chapValues,
+    Default = tostring(CreateCfg.Chapter),
+})
+Options.CR_Chapter:OnChanged(function(v)
+    local n = tonumber(v) or 1
+    if n < 1 then n = 1 elseif n > 10 then n = 10 end
+    CreateCfg.Chapter = n
+end)
+
+CR_Left:AddDropdown("CR_Diff", {
+    Text = "Difficulty",
+    Values = {"Normal","Hard","Nightmare"},
+    Default = CreateCfg.Difficulty,
+})
+Options.CR_Diff:OnChanged(function(v) CreateCfg.Difficulty = v end)
+
+CR_Left:AddToggle("CR_FriendsOnly", { Text = "Friends Only", Default = CreateCfg.FriendsOnly })
+Toggles.CR_FriendsOnly:OnChanged(function(v)
+    CreateCfg.FriendsOnly = v
+    clickIfExists({"Players", player.Name, "PlayerGui","PlayRoom","Main","GameStage","Main","Base","Misc","FriendOnly"}, 2)
+end)
+
+CR_Left:AddToggle("CR_AutoStart", { Text = "Auto Start After Create", Default = CreateCfg.AutoStart })
+Toggles.CR_AutoStart:OnChanged(function(v) CreateCfg.AutoStart = v end)
+
+local function doOpenCreatePane()
+    clickIfExists({"Players", player.Name, "PlayerGui","HUD","MenuFrame","LeftSide","Frame","PlayRoom"}, 3)
+    task.wait(0.15)
+    clickIfExists({"Players", player.Name, "PlayerGui","PlayRoom","Main","Button","Create"}, 3)
+end
+
+local function selectMapInScroll(mapName)
+    local sf = safeWaitPath(pg, {"PlayRoom","Main","GameStage","Main","Base","Story","ScrollingFrame"}, 4)
+    if not sf then return false end
+    return scrollClickByName(sf, mapName)
+end
+
+local function selectChapterInScroll(mapName, chapterNum)
+    local basePath = {"PlayRoom","Main","GameStage","Main","Base","Chapter", mapName}
+    local chapRoot = safeWaitPath(pg, basePath, 3)
+    if not chapRoot then return false end
+
+    local container = chapRoot:FindFirstChild(mapName.."_Chapter1-10")
+    if not container then
+        local directBtn = chapRoot:FindFirstChild(("%s_Chapter%d"):format(mapName, chapterNum))
+        if directBtn then
+            local sfParent = chapRoot:FindFirstChildWhichIsA("ScrollingFrame") or chapRoot
+            return scrollIntoViewAndClick(sfParent, directBtn)
+        end
+        return false
+    end
+
+    local sf = container:FindFirstChildWhichIsA("ScrollingFrame") or container
+    local chapterName = ("%s_Chapter%d"):format(mapName, chapterNum)
+    if sf:IsA("ScrollingFrame") then
+        return scrollClickByName(sf, chapterName)
+    else
+        local target = container:FindFirstChild(chapterName)
+        if target then
+            local btn = findFirstClickable(target)
+            if btn then clickGuiObject(btn); return true end
+        end
+    end
+    return false
+end
+
+local function selectDifficulty(diffName)
+    local path = {"Players", player.Name, "PlayerGui","PlayRoom","Main","GameStage","Main","Base","DifficultyButton", diffName}
+    local clicked = clickIfExists(path, 2)
+    if not clicked then
+        local node = safeWaitPath(game, path, 1)
+        if node then
+            local btn = findFirstClickable(node)
+            if btn then clickGuiObject(btn); clicked = true end
+        end
+    end
+    return clicked
+end
+
+local function doCreateRoom()
+    -- 1) Open create pane
+    doOpenCreatePane()
+    task.wait(0.15)
+
+    -- 2) Select Map (scrolling)
+    selectMapInScroll(CreateCfg.Map)
+    task.wait(0.15)
+
+    -- 3) Select Chapter (scrolling since 4+)
+    selectChapterInScroll(CreateCfg.Map, CreateCfg.Chapter)
+    task.wait(0.12)
+
+    -- 4) Difficulty
+    selectDifficulty(CreateCfg.Difficulty)
+    task.wait(0.06)
+
+    -- 5) FriendsOnly
+    if CreateCfg.FriendsOnly then
+        clickIfExists({"Players", player.Name, "PlayerGui","PlayRoom","Main","GameStage","Main","Base","Misc","FriendOnly"}, 1.0)
+        task.wait(0.05)
+    end
+
+    -- 6) Create
+    clickIfExists({"Players", player.Name, "PlayerGui","PlayRoom","Main","GameStage","Main","Base","Button","Create"}, 2.5)
+
+    -- 7) AutoStart
+    if CreateCfg.AutoStart then
+        task.wait(0.35)
+        local okStart = clickIfExists({"Players", player.Name, "PlayerGui","PlayRoom","Main","Game_Submit","Button","Start"}, 2.0)
+        if not okStart then Library:Notify("Start button not found (กดเองได้)", 3) end
+    end
+end
+
+CR_Right:AddButton("Open PlayRoom (Create)", function() doOpenCreatePane() end)
+CR_Right:AddButton("Create Room Now", function() task.spawn(doCreateRoom) end)
 
 --====================================================
 -- UI Settings / Themes / Saves
@@ -510,13 +673,10 @@ SaveManager:LoadAutoloadConfig()
 
 -- Cleanup
 Library:OnUnload(function()
-	-- Event tab
-	stopAutoRestartWatcher()
-	stopAutoHideWatcher()
-	stopAutoPlayWatcher()
-	-- Game tab
-	stopVoteLoop("Retry")
-	stopVoteLoop("Next")
-	stopVoteLoop("Play")
+	-- Event
+	pcall(function() if Toggles.AutoRestartTwoOfTwo and Toggles.AutoRestartTwoOfTwo.Value then end end)
+	pcall(function() end)
+	-- Game
+	pcall(function() end)
 	print("[UI] Unloaded.")
 end)
