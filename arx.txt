@@ -1,0 +1,522 @@
+--====================================================
+-- UI (Obsidian/Linoria) + Event tab + Game tab (All-in-One)
+--  - Event: Auto Restart @2/2, Auto Hide Rewards UI, Auto Play Swarm Event
+--  - Game : Auto Retry / Auto Next / Auto Vote Game / AutoPlay (Bool)
+--====================================================
+
+-- libs
+local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
+local Library = loadstring(game:HttpGet(repo .. "Library.lua"))()
+local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
+local SaveManager  = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
+
+Library.ForceCheckbox = false
+Library.ShowToggleFrameInKeybinds = true
+
+-- Window / Tabs
+local Window = Library:CreateWindow({
+	Title = "RepintX",
+	Footer = "version: example",
+	Icon = 95816097006870,
+	NotifySide = "Right",
+	ShowCustomCursor = true,
+	AutoShow = true,
+})
+
+local Tabs = {
+	Game   = Window:AddTab("Game", "gamepad-2"),     -- รีโมทโหวต + AutoPlay
+	Event  = Window:AddTab("Event", "activity"),     -- ย้ายฟังก์ชันหลักมาที่นี่
+	["UI Settings"] = Window:AddTab("UI Settings", "settings"),
+}
+
+local Options, Toggles = Library.Options, Library.Toggles
+
+--====================================================
+-- Helpers (ปลอดภัย / ไม่เลื่อนสกรอล์)
+--====================================================
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local GuiService = game:GetService("GuiService")
+local VIM = game:GetService("VirtualInputManager")
+
+local player = Players.LocalPlayer
+local pg = player:WaitForChild("PlayerGui")
+
+local function safeWaitPath(root, path, timeout)
+    local node, t0 = root, os.clock()
+    for i, name in ipairs(path) do
+        local ok, found = pcall(function() return node:WaitForChild(name, 2) end)
+        if not ok or not found then
+            repeat
+                found = node:FindFirstChild(name)
+                if found then break end
+                task.wait(0.2)
+            until (os.clock() - t0) >= (timeout or 10)
+        end
+        if not found then return nil, ("missing: %s (idx %d)"):format(name, i) end
+        node = found
+    end
+    return node
+end
+
+local function clickGuiObject(obj)
+    if not obj then return end
+    local inset = GuiService:GetGuiInset()
+    local center = obj.AbsolutePosition + (obj.AbsoluteSize / 2)
+    VIM:SendMouseButtonEvent(center.X, center.Y + inset.Y, 0, true, obj, 0)
+    VIM:SendMouseButtonEvent(center.X, center.Y + inset.Y, 0, false, obj, 0)
+end
+
+local function setBoolValueSafely(valObj, bool)
+	if not valObj then return end
+	pcall(function() if valObj.Value ~= nil then valObj.Value = bool end end)
+	pcall(function() if valObj.value ~= nil then valObj.value = bool end end)
+end
+
+-- ===== Remote helpers (Game votes / Restart 2/2) =====
+local function getVoteRemote(key)
+	-- key: "VoteRetry" | "VoteNext" | "VotePlaying"
+	local ok, r = pcall(function()
+		return ReplicatedStorage
+			:WaitForChild("Remote")
+			:WaitForChild("Server")
+			:WaitForChild("OnGame")
+			:WaitForChild("Voting")
+			:WaitForChild(key)
+	end)
+	return ok and r or nil
+end
+
+local function wavesIsTwoOfTwo(wavesLabel)
+    local txt = tostring(wavesLabel.Text or "")
+    return (txt == "2/2") or (txt:find("2%s*/%s*2") ~= nil)
+end
+
+local function spamVote(remoteName, duration, interval)
+	duration = duration or 5
+	interval = interval or 0.25
+	local r = getVoteRemote(remoteName)
+	if not r then return end
+	local t0 = os.clock()
+	while (os.clock() - t0) < duration do
+		pcall(function() r:FireServer() end)
+		task.wait(interval)
+	end
+end
+
+--====================================================
+-- ============  EVENT TAB (ย้ายมาที่นี่)  ===========
+--   - Auto Restart at 2/2
+--   - Auto Hide Rewards UI
+--   - Auto Play Swarm Event
+--====================================================
+
+-------------------------
+-- Auto Restart at 2/2 --
+-------------------------
+local AutoGB = Tabs.Event:AddLeftGroupbox("Auto Restart / Vote")
+
+AutoGB:AddToggle("AutoRestartTwoOfTwo", {
+    Text = "Auto Restart at 2/2",
+    Tooltip = "เจอ 2/2 → เปิด Settings → กด Restart Match → สแปม VoteRetry",
+    Default = false,
+})
+
+AutoGB:AddSlider("RetryDuration", {
+    Text = "Spam Duration (sec)",
+    Default = 10, Min = 3, Max = 30, Rounding = 0,
+    Tooltip = "ระยะเวลาสแปม VoteRetry",
+})
+
+AutoGB:AddSlider("RetryInterval", {
+    Text = "Spam Interval (sec)",
+    Default = 0.25, Min = 0.05, Max = 1.0, Rounding = 2,
+    Tooltip = "ช่วงเวลาระหว่างช็อต",
+})
+
+AutoGB:AddLabel("Hotkey"):AddKeyPicker("AutoRestartKey", {
+    Default = "F6",
+    Mode = "Toggle",
+    Text = "Toggle Auto Restart",
+    NoUI = false,
+    SyncToggleState = true,
+})
+
+Options.AutoRestartKey:OnClick(function()
+    Toggles.AutoRestartTwoOfTwo:SetValue(not Toggles.AutoRestartTwoOfTwo.Value)
+end)
+
+-- Runner
+local AutoRestartState = { running = false, token = 0 }
+
+local function startAutoRestartWatcher()
+    if AutoRestartState.running then return end
+    AutoRestartState.running = true
+    AutoRestartState.token += 1
+    local myToken = AutoRestartState.token
+
+    task.spawn(function()
+        local wavesLabel = safeWaitPath(pg, {"HUD","InGame","Main","TOP","List","Waves","Numbers"}, 15)
+        while AutoRestartState.running and (myToken == AutoRestartState.token) do
+            if wavesLabel and wavesIsTwoOfTwo(wavesLabel) then
+                -- เปิด Settings
+                pcall(function() pg.Settings.Enabled = true end)
+                task.wait(0.3)
+
+                -- กด Restart Match (ไม่เลื่อน scroll)
+                local restartClick = safeWaitPath(
+                    pg,
+                    {"Settings","Main","Base","Space","ScrollingFrame","Restart Match","Click"},
+                    3
+                )
+                if restartClick then
+                    clickGuiObject(restartClick)
+                end
+
+                -- สแปมโหวต Retry
+                spamVote("VoteRetry", Options.RetryDuration.Value, Options.RetryInterval.Value)
+
+                -- กันกดซ้ำจนกว่า Wave จะเปลี่ยน
+                repeat
+                    if not (AutoRestartState.running and myToken == AutoRestartState.token) then break end
+                    task.wait(0.75)
+                until not wavesIsTwoOfTwo(wavesLabel)
+            else
+                task.wait(0.35)
+            end
+        end
+        if myToken == AutoRestartState.token then
+            AutoRestartState.running = false
+        end
+    end)
+end
+
+local function stopAutoRestartWatcher()
+    if not AutoRestartState.running then return end
+    AutoRestartState.token += 1
+    AutoRestartState.running = false
+end
+
+Toggles.AutoRestartTwoOfTwo:OnChanged(function()
+    if Toggles.AutoRestartTwoOfTwo.Value then
+        startAutoRestartWatcher()
+        Library:Notify("Auto Restart at 2/2: ON", 3)
+    else
+        stopAutoRestartWatcher()
+        Library:Notify("Auto Restart at 2/2: OFF", 3)
+    end
+end)
+
+if Toggles.AutoRestartTwoOfTwo.Value then startAutoRestartWatcher() end
+
+--------------------------
+-- Auto Hide Rewards UI --
+--------------------------
+local AutoHideGB = Tabs.Event:AddRightGroupbox("Auto Hide")
+
+AutoHideGB:AddToggle("AutoHideRewards", {
+    Text = "Auto Hide Rewards UI",
+    Tooltip = "ถ้า RewardsUI.Enabled == true จะปิดเป็น false อัตโนมัติ",
+    Default = false,
+})
+
+local AutoHideState = { running = false, token = 0 }
+
+local function startAutoHideWatcher()
+    if AutoHideState.running then return end
+    AutoHideState.running = true
+    AutoHideState.token += 1
+    local myToken = AutoHideState.token
+
+    task.spawn(function()
+        local RewardsUI = safeWaitPath(pg, {"RewardsUI"}, 10)
+        while AutoHideState.running and (myToken == AutoHideState.token) do
+            if RewardsUI and RewardsUI.Enabled == true then
+                pcall(function() RewardsUI.Enabled = false end)
+            end
+            task.wait(0.5)
+        end
+        if myToken == AutoHideState.token then
+            AutoHideState.running = false
+        end
+    end)
+end
+
+local function stopAutoHideWatcher()
+    if not AutoHideState.running then return end
+    AutoHideState.token += 1
+    AutoHideState.running = false
+end
+
+Toggles.AutoHideRewards:OnChanged(function()
+    if Toggles.AutoHideRewards.Value then
+        startAutoHideWatcher()
+        Library:Notify("Auto Hide Rewards UI: ON", 3)
+    else
+        stopAutoHideWatcher()
+        Library:Notify("Auto Hide Rewards UI: OFF", 3)
+    end
+end)
+
+if Toggles.AutoHideRewards.Value then startAutoHideWatcher() end
+
+-------------------------
+-- Auto Play Swarm Event
+-------------------------
+local PlayGB = Tabs.Event:AddRightGroupbox("Play Event")
+
+PlayGB:AddToggle("AutoPlayEvent", {
+    Text = "Auto Play Swarm Event",
+    Tooltip = "เปิด HUD > Swarm Event แล้วกด Play อัตโนมัติ",
+    Default = false,
+})
+
+PlayGB:AddSlider("PlayCooldown", {
+    Text = "Cooldown (sec)",
+    Default = 3, Min = 1, Max = 15, Rounding = 0,
+    Tooltip = "กันการกดซ้ำรัว ๆ",
+})
+
+local function tryOpenSwarmEventMenu()
+    -- HUD.MenuFrame.RightSide["Swarm Event"]
+    local openBtn = safeWaitPath(pg, {"HUD","MenuFrame","RightSide","Swarm Event"}, 3)
+    if openBtn and openBtn.Visible then
+        local clickObj = openBtn:FindFirstChild("Click") or openBtn
+        pcall(function() clickGuiObject(clickObj) end)
+        return true
+    end
+    return false
+end
+
+local function tryPressSwarmEventPlay()
+    -- PlayerGui["Swarm Event"].Main.Tabs.Play
+    local playBtn = safeWaitPath(pg, {"Swarm Event","Main","Tabs","Play"}, 3)
+    if playBtn and playBtn.Visible then
+        local clickable = playBtn:FindFirstChild("Click") or playBtn
+        pcall(function() clickGuiObject(clickable) end)
+        return true
+    end
+    return false
+end
+
+local AutoPlayState = { running = false, token = 0, lastTick = 0 }
+
+local function startAutoPlayWatcher()
+    if AutoPlayState.running then return end
+    AutoPlayState.running = true
+    AutoPlayState.token += 1
+    local myToken = AutoPlayState.token
+
+    task.spawn(function()
+        while AutoPlayState.running and (myToken == AutoPlayState.token) do
+            local now = os.clock()
+            if now - (AutoPlayState.lastTick or 0) >= (Options.PlayCooldown.Value or 3) then
+                local okOpen = tryOpenSwarmEventMenu()
+                task.wait(0.25)
+                local okPlay = tryPressSwarmEventPlay()
+                if okOpen or okPlay then
+                    AutoPlayState.lastTick = now
+                end
+            end
+            task.wait(0.5)
+        end
+        if myToken == AutoPlayState.token then
+            AutoPlayState.running = false
+        end
+    end)
+end
+
+local function stopAutoPlayWatcher()
+    if not AutoPlayState.running then return end
+    AutoPlayState.token += 1
+    AutoPlayState.running = false
+end
+
+Toggles.AutoPlayEvent:OnChanged(function()
+    if Toggles.AutoPlayEvent.Value then
+        startAutoPlayWatcher()
+        Library:Notify("Auto Play Swarm Event: ON", 3)
+    else
+        stopAutoPlayWatcher()
+        Library:Notify("Auto Play Swarm Event: OFF", 3)
+    end
+end)
+
+if Toggles.AutoPlayEvent.Value then startAutoPlayWatcher() end
+
+--====================================================
+-- ===================== GAME TAB ====================
+--   - Auto Retry (VoteRetry)
+--   - Auto Next (VoteNext)
+--   - Auto Vote Game (VotePlaying)
+--   - AutoPlay Bool (ReplicatedStorage.Player_Data.ligthorgg.Data.AutoPlay)
+--====================================================
+
+local GameGB = Tabs.Game:AddLeftGroupbox("Voting Remotes")
+
+GameGB:AddToggle("AutoRetry", {
+	Text = "Auto Retry ",
+	Tooltip = "",
+	Default = false,
+})
+
+GameGB:AddToggle("AutoNext", {
+	Text = "Auto Next ",
+	Tooltip = "",
+	Default = false,
+})
+
+GameGB:AddToggle("AutoVotePlaying", {
+	Text = "Auto Vote Game",
+	Tooltip = "",
+	Default = false,
+})
+
+GameGB:AddSlider("GameVoteInterval", {
+	Text = "Remote Interval (sec)",
+	Default = 1.0, Min = 0.1, Max = 5.0, Rounding = 2,
+	Tooltip = "หน่วงเวลาระหว่างการยิงแต่ละครั้ง",
+})
+
+-- Watchers สำหรับรีโมททั้งสาม
+local VoteState = {
+	Retry = {running=false, token=0},
+	Next  = {running=false, token=0},
+	Play  = {running=false, token=0},
+}
+
+local function startVoteLoop(which, remoteName)
+	local state = VoteState[which]
+	if state.running then return end
+	state.running = true
+	state.token += 1
+	local myToken = state.token
+
+	task.spawn(function()
+		local r = getVoteRemote(remoteName)
+		while state.running and (myToken == state.token) do
+			if r then pcall(function() r:FireServer() end) end
+			task.wait(Options.GameVoteInterval.Value or 1.0)
+		end
+		if myToken == state.token then state.running = false end
+	end)
+end
+
+local function stopVoteLoop(which)
+	local state = VoteState[which]
+	if not state.running then return end
+	state.token += 1
+	state.running = false
+end
+
+Toggles.AutoRetry:OnChanged(function()
+	if Toggles.AutoRetry.Value then
+		startVoteLoop("Retry","VoteRetry")
+		Library:Notify("Auto Retry: ON", 3)
+	else
+		stopVoteLoop("Retry")
+		Library:Notify("Auto Retry: OFF", 3)
+	end
+end)
+
+Toggles.AutoNext:OnChanged(function()
+	if Toggles.AutoNext.Value then
+		startVoteLoop("Next","VoteNext")
+		Library:Notify("Auto Next: ON", 3)
+	else
+		stopVoteLoop("Next")
+		Library:Notify("Auto Next: OFF", 3)
+	end
+end)
+
+Toggles.AutoVotePlaying:OnChanged(function()
+	if Toggles.AutoVotePlaying.Value then
+		startVoteLoop("Play","VotePlaying")
+		Library:Notify("Auto Vote Game: ON", 3)
+	else
+		stopVoteLoop("Play")
+		Library:Notify("Auto Vote Game: OFF", 3)
+	end
+end)
+
+-- Auto start if default true
+if Toggles.AutoRetry.Value then startVoteLoop("Retry","VoteRetry") end
+if Toggles.AutoNext.Value then startVoteLoop("Next","VoteNext") end
+if Toggles.AutoVotePlaying.Value then startVoteLoop("Play","VotePlaying") end
+
+-- AutoPlay Bool (true=open / false=close)
+local GameRight = Tabs.Game:AddRightGroupbox("AutoPlay Toggle")
+
+GameRight:AddToggle("AutoPlayBool", {
+	Text = "AutoPlay",
+	Tooltip = "เปิด true / ปิด false",
+	Default = false,
+})
+
+local function setAutoPlayBool(enabled)
+	local node = safeWaitPath(ReplicatedStorage, {"Player_Data","ligthorgg","Data","AutoPlay"}, 10)
+	if node then
+		setBoolValueSafely(node, enabled)
+		Library:Notify(("AutoPlay set to %s"):format(tostring(enabled)), 3)
+	else
+		Library:Notify("AutoPlay path not found.", 3)
+	end
+end
+
+Toggles.AutoPlayBool:OnChanged(function()
+	setAutoPlayBool(Toggles.AutoPlayBool.Value)
+end)
+
+--====================================================
+-- UI Settings / Themes / Saves
+--====================================================
+local MenuGroup = Tabs["UI Settings"]:AddLeftGroupbox("Menu")
+MenuGroup:AddToggle("KeybindMenuOpen", {
+	Default = Library.KeybindFrame.Visible,
+	Text = "Open Keybind Menu",
+	Callback = function(v) Library.KeybindFrame.Visible = v end,
+})
+MenuGroup:AddToggle("ShowCustomCursor", {
+	Text = "Custom Cursor",
+	Default = true,
+	Callback = function(v) Library.ShowCustomCursor = v end,
+})
+MenuGroup:AddDropdown("NotificationSide", {
+	Values = { "Left", "Right" }, Default = "Right",
+	Text = "Notification Side",
+	Callback = function(v) Library:SetNotifySide(v) end,
+})
+MenuGroup:AddDropdown("DPIDropdown", {
+	Values = { "50%", "75%", "100%", "125%", "150%", "175%", "200%" },
+	Default = "100%", Text = "DPI Scale",
+	Callback = function(v)
+		local n = tonumber(v:gsub("%%",""))
+        if n then Library:SetDPIScale(n) end
+	end,
+})
+MenuGroup:AddLabel("Menu bind"):AddKeyPicker("MenuKeybind", { Default = "RightShift", NoUI = true, Text = "Menu keybind" })
+Library.ToggleKeybind = Options.MenuKeybind
+
+ThemeManager:SetLibrary(Library)
+SaveManager:SetLibrary(Library)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({ "MenuKeybind" })
+ThemeManager:SetFolder("MyScriptHub")
+SaveManager:SetFolder("MyScriptHub/specific-game")
+SaveManager:SetSubFolder("specific-place")
+SaveManager:BuildConfigSection(Tabs["UI Settings"])
+ThemeManager:ApplyToTab(Tabs["UI Settings"])
+SaveManager:LoadAutoloadConfig()
+
+-- Cleanup
+Library:OnUnload(function()
+	-- Event tab
+	stopAutoRestartWatcher()
+	stopAutoHideWatcher()
+	stopAutoPlayWatcher()
+	-- Game tab
+	stopVoteLoop("Retry")
+	stopVoteLoop("Next")
+	stopVoteLoop("Play")
+	print("[UI] Unloaded.")
+end)
