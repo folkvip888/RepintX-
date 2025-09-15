@@ -1,8 +1,9 @@
 --====================================================
 -- UI (Obsidian/Linoria) + Event + Game + Create Room + UI Settings (All-in-One)
---  - Event: Auto Restart @2/2, Auto Hide Rewards UI, Auto Play Swarm Event
+--  - Event: Auto Restart @2/2, Auto Hide Rewards UI, Adventure Votes (Auto Endure/Evade)
 --  - Game : Auto Retry / Auto Next / Auto Vote Game / AutoPlay (Bool) + Redeem All Codes (0.35s delay)
---  - Create Room: Stage (Story/Ranger/Raids/Infinite) + Map/Chapter (with Scrolling), Difficulty, FriendOnly, AutoStart
+--  - Create Room: Stage (Story/Ranger/Raids/Infinite) + Map/Chapter (Scrolling), Difficulty, FriendOnly, AutoStart
+--                + Auto Join Swarm Event (ย้ายมาเพิ่มที่นี่) + Auto Join Adventure Gamemode
 --====================================================
 
 -- libs
@@ -75,6 +76,11 @@ local function setBoolValueSafely(valObj, bool)
 	pcall(function() if valObj.value ~= nil then valObj.value = bool end end)
 end
 
+local function wavesIsTwoOfTwo(wavesLabel)
+    local txt = tostring(wavesLabel.Text or "")
+    return (txt == "2/2") or (txt:find("2%s*/%s*2") ~= nil)
+end
+
 -- vote remotes
 local function getVoteRemote(key)
 	local ok, r = pcall(function()
@@ -86,11 +92,6 @@ local function getVoteRemote(key)
 			:WaitForChild(key)
 	end)
 	return ok and r or nil
-end
-
-local function wavesIsTwoOfTwo(wavesLabel)
-    local txt = tostring(wavesLabel.Text or "")
-    return (txt == "2/2") or (txt:find("2%s*/%s*2") ~= nil)
 end
 
 local function spamVote(remoteName, duration, interval)
@@ -241,9 +242,9 @@ end
 -- ===================== EVENT TAB ===================
 --====================================================
 -- Auto Restart @ 2/2
-local AutoGB = Tabs.Event:AddLeftGroupbox("BugGame")
+local AutoGB = Tabs.Event:AddLeftGroupbox("Auto Restart / Vote")
 
-AutoGB:AddToggle("AutoRestartTwoOfTwo", { Text = "Auto Use Bug Swarm Event ", Default = false })
+AutoGB:AddToggle("AutoRestartTwoOfTwo", { Text = "Auto Restart at 2/2", Default = false })
 AutoGB:AddSlider("RetryDuration", { Text = "Spam Duration (sec)", Default = 10, Min = 3, Max = 30, Rounding = 0 })
 AutoGB:AddSlider("RetryInterval", { Text = "Spam Interval (sec)", Default = 0.25, Min = 0.05, Max = 1.0, Rounding = 2 })
 AutoGB:AddLabel("Hotkey"):AddKeyPicker("AutoRestartKey", { Default = "F6", Mode = "Toggle", Text = "Toggle Auto Restart", NoUI = false, SyncToggleState = true })
@@ -301,54 +302,61 @@ local function stopAutoHideWatcher() if not AutoHideState.running then return en
 Toggles.AutoHideRewards:OnChanged(function(v) if v then startAutoHideWatcher() else stopAutoHideWatcher() end end)
 if Toggles.AutoHideRewards.Value then startAutoHideWatcher() end
 
--- Auto Play Swarm Event
-local PlayGB = Tabs.Event:AddRightGroupbox("Play Event")
-PlayGB:AddToggle("AutoPlayEvent", { Text = "Auto Play Swarm Event", Default = false })
-PlayGB:AddSlider("PlayCooldown", { Text = "Cooldown (sec)", Default = 3, Min = 1, Max = 15, Rounding = 0 })
+-- ===== Adventure Votes (Evade / Endure) =====
+local AdvVoteGB = Tabs.Event:AddLeftGroupbox("Adventure Votes")
+AdvVoteGB:AddToggle("AutoVoteEndure", { Text = "Auto Vote: Endure", Default = false })
+AdvVoteGB:AddToggle("AutoVoteEvade",  { Text = "Auto Vote: Evade",  Default = false })
 
-local function tryOpenSwarmEventMenu()
-    local openBtn = safeWaitPath(pg, {"HUD","MenuFrame","RightSide","Swarm Event"}, 3)
-    if openBtn and openBtn.Visible then
-        local clickObj = openBtn:FindFirstChild("Click") or openBtn
-        pcall(function() clickGuiObject(clickObj) end)
-        return true
-    end
-    return false
+-- mutually exclusive toggles
+local _syncVote = false
+local function _setVotePair(endureOn, evadeOn)
+    if _syncVote then return end
+    _syncVote = true
+    if Toggles.AutoVoteEndure then Toggles.AutoVoteEndure:SetValue(endureOn) end
+    if Toggles.AutoVoteEvade then Toggles.AutoVoteEvade:SetValue(evadeOn) end
+    _syncVote = false
 end
+Toggles.AutoVoteEndure:OnChanged(function(v) if v then _setVotePair(true, false) end end)
+Toggles.AutoVoteEvade:OnChanged(function(v) if v then _setVotePair(false, true) end end)
 
-local function tryPressSwarmEventPlay()
-    local playBtn = safeWaitPath(pg, {"Swarm Event","Main","Tabs","Play"}, 3)
-    if playBtn and playBtn.Visible then
-        local clickable = playBtn:FindFirstChild("Click") or playBtn
-        pcall(function() clickGuiObject(clickable) end)
-        return true
-    end
-    return false
-end
-
-local AutoPlayState = { running = false, token = 0, lastTick = 0 }
-local function startAutoPlayWatcher()
-    if AutoPlayState.running then return end
-    AutoPlayState.running = true
-    AutoPlayState.token += 1
-    local myToken = AutoPlayState.token
+local AdvVoteState = { running=false, token=0 }
+local function startAdvVoteWatcher()
+    if AdvVoteState.running then return end
+    AdvVoteState.running = true
+    AdvVoteState.token += 1
+    local myToken = AdvVoteState.token
     task.spawn(function()
-        while AutoPlayState.running and (myToken == AutoPlayState.token) do
-            local now = os.clock()
-            if now - (AutoPlayState.lastTick or 0) >= (Options.PlayCooldown.Value or 3) then
-                local okOpen = tryOpenSwarmEventMenu()
-                task.wait(0.25)
-                local okPlay = tryPressSwarmEventPlay()
-                if okOpen or okPlay then AutoPlayState.lastTick = now end
+        while AdvVoteState.running and (myToken == AdvVoteState.token) do
+            local prompt = pg:FindFirstChild("AdventureContinuePrompt")
+            if prompt and prompt:IsA("ScreenGui") and prompt.Enabled then
+                local side = safeWaitPath(prompt, {"Main","LeftSide","Button"}, 1)
+                if side then
+                    local choose = Toggles.AutoVoteEndure.Value and "Endure" or (Toggles.AutoVoteEvade.Value and "Evade" or nil)
+                    if choose and side:FindFirstChild(choose) then
+                        local btn = findFirstClickable(side[choose]) or side[choose]
+                        if btn then pcall(function() clickGuiObject(btn) end) end
+                    end
+                end
+                task.wait(0.6) -- ป้องกันสแปมซ้ำ
+            else
+                task.wait(0.2)
             end
-            task.wait(0.5)
         end
-        if myToken == AutoPlayState.token then AutoPlayState.running = false end
+        if myToken == AdvVoteState.token then AdvVoteState.running = false end
     end)
 end
-local function stopAutoPlayWatcher() if not AutoPlayState.running then return end AutoPlayState.token += 1 AutoPlayState.running = false end
-Toggles.AutoPlayEvent:OnChanged(function(v) if v then startAutoPlayWatcher() else stopAutoPlayWatcher() end end)
-if Toggles.AutoPlayEvent.Value then startAutoPlayWatcher() end
+local function stopAdvVoteWatcher() if not AdvVoteState.running then return end AdvVoteState.token += 1 AdvVoteState.running=false end
+
+local function _refreshAdvVoteWatcher()
+    if (Toggles.AutoVoteEndure.Value or Toggles.AutoVoteEvade.Value) then
+        startAdvVoteWatcher()
+    else
+        stopAdvVoteWatcher()
+    end
+end
+Toggles.AutoVoteEndure:OnChanged(_refreshAdvVoteWatcher)
+Toggles.AutoVoteEvade:OnChanged(_refreshAdvVoteWatcher)
+_refreshAdvVoteWatcher()
 
 --====================================================
 -- ====================== GAME TAB ===================
@@ -432,7 +440,8 @@ end)
 
 --====================================================
 -- ==================== CREATE ROOM ==================
---  Stage + Map/Chapter Scrolling + Difficulty + FriendOnly + AutoStart
+--  Stage + Map/Chapter + Difficulty + FriendOnly + AutoStart
+--  + Auto Join Swarm Event + Auto Join Adventure Gamemode
 --====================================================
 local CreateCfg = {
     Stage = "Story",  -- "Story" | "Ranger" | "Raids" | "Infinite"
@@ -507,7 +516,172 @@ end)
 CR_Left:AddToggle("CR_AutoStart", { Text = "Auto Start After Create", Default = CreateCfg.AutoStart })
 Toggles.CR_AutoStart:OnChanged(function(v) CreateCfg.AutoStart = v end)
 
--- Actions
+-- ===== Auto Join Modes (Swarm Event + Adventure Gamemode) =====
+local CR_Join = Tabs["Create Room"]:AddRightGroupbox("Auto Join Modes")
+CR_Join:AddToggle("CR_AutoJoinSwarm", { Text = "Auto Join: Swarm Event", Default = false })
+CR_Join:AddToggle("CR_AutoJoinAdventure", { Text = "Auto Join: Adventure Gamemode", Default = false })
+CR_Join:AddSlider("CR_JoinCooldown", { Text = "Join Cooldown (sec)", Default = 3, Min = 1, Max = 15, Rounding = 0 })
+
+-- Swarm Event (reuse helpers)
+local function tryOpenSwarmEventMenu()
+    local openBtn = safeWaitPath(pg, {"HUD","MenuFrame","RightSide","Swarm Event"}, 3)
+    if openBtn and openBtn.Visible then
+        local clickObj = openBtn:FindFirstChild("Click") or openBtn
+        pcall(function() clickGuiObject(clickObj) end)
+        return true
+    end
+    return false
+end
+local function tryPressSwarmEventPlay()
+    local playBtn = safeWaitPath(pg, {"Swarm Event","Main","Tabs","Play"}, 3)
+    if playBtn and playBtn.Visible then
+        local clickable = playBtn:FindFirstChild("Click") or playBtn
+        pcall(function() clickGuiObject(clickable) end)
+        return true
+    end
+    return false
+end
+
+-- Adventure Gamemode
+local function tryOpenAdventureGamemode()
+    local adv = pg:FindFirstChild("Adventure Gamemode")
+    if not adv then adv = safeWaitPath(pg, {"Adventure Gamemode"}, 2) end
+    if adv and adv:IsA("ScreenGui") then
+        pcall(function() adv.Enabled = true end)
+        return true
+    end
+    return false
+end
+local function tryPressAdventurePlay()
+    local btn = safeWaitPath(pg, {"Adventure Gamemode","Main","Base","Button","Play"}, 3)
+    if not btn then return false end
+    local clickObj = findFirstClickable(btn) or btn
+    if clickObj then pcall(function() clickGuiObject(clickObj) end) return true end
+    return false
+end
+local function tryAdventureStart()
+    return clickIfExists({"Players", player.Name, "PlayerGui","PlayRoom","Main","Game_Submit","Button","Start"}, 2.0)
+end
+
+-- shared state
+local CR_AutoJoin_State = {
+    swarm = {running=false, token=0, last=0},
+    adv   = {running=false, token=0, last=0},
+}
+local function startSwarmJoin()
+    local s = CR_AutoJoin_State.swarm
+    if s.running then return end
+    s.running = true; s.token += 1
+    local my = s.token
+    task.spawn(function()
+        while s.running and (my == s.token) do
+            local now = os.clock()
+            if now - (s.last or 0) >= (Options.CR_JoinCooldown.Value or 3) then
+                local okOpen = tryOpenSwarmEventMenu()
+                task.wait(0.2)
+                local okPlay = tryPressSwarmEventPlay()
+                if okOpen or okPlay then s.last = now end
+            end
+            task.wait(0.4)
+        end
+        if my == s.token then s.running = false end
+    end)
+end
+local function stopSwarmJoin() local s=CR_AutoJoin_State.swarm; if not s.running then return end s.token+=1; s.running=false end
+
+local function startAdventureJoin()
+    local s = CR_AutoJoin_State.adv
+    if s.running then return end
+    s.running = true; s.token += 1
+    local my = s.token
+    task.spawn(function()
+        while s.running and (my == s.token) do
+            local now = os.clock()
+            if now - (s.last or 0) >= (Options.CR_JoinCooldown.Value or 3) then
+                local okOpen = tryOpenAdventureGamemode()
+                task.wait(0.2)
+                local okPlay = tryPressAdventurePlay()
+                task.wait(0.2)
+                if okOpen or okPlay then
+                    -- ถ้าเข้า flow แล้ว ลองกด Start
+                    tryAdventureStart()
+                    s.last = now
+                end
+            end
+            task.wait(0.4)
+        end
+        if my == s.token then s.running = false end
+    end)
+end
+local function stopAdventureJoin() local s=CR_AutoJoin_State.adv; if not s.running then return end s.token+=1; s.running=false end
+
+-- sync Swarm toggle between Event/CR (ใช้ watcher เดิมของ Event ถ้ามี)
+local _syncSwarm = false
+local AutoPlayState = AutoPlayState or { running=false, token=0, lastTick=0 } -- เผื่อยังมีจาก Event
+local function startAutoPlayWatcher() -- (เดิมใช้ใน Event; คงไว้)
+    if AutoPlayState.running then return end
+    AutoPlayState.running = true
+    AutoPlayState.token += 1
+    local myToken = AutoPlayState.token
+    task.spawn(function()
+        while AutoPlayState.running and (myToken == AutoPlayState.token) do
+            local now = os.clock()
+            if now - (AutoPlayState.lastTick or 0) >= (Options.CR_JoinCooldown and Options.CR_JoinCooldown.Value or 3) then
+                local okOpen = tryOpenSwarmEventMenu()
+                task.wait(0.25)
+                local okPlay = tryPressSwarmEventPlay()
+                if okOpen or okPlay then AutoPlayState.lastTick = now end
+            end
+            task.wait(0.5)
+        end
+        if myToken == AutoPlayState.token then AutoPlayState.running = false end
+    end)
+end
+local function stopAutoPlayWatcher() if not AutoPlayState.running then return end AutoPlayState.token += 1 AutoPlayState.running = false end
+
+-- ถ้า Event มี toggle ชื่อ AutoPlayEvent อยู่แล้ว ให้ sync กับ CR_AutoJoinSwarm
+if Tabs.Event then
+    local PlayGB = Tabs.Event:AddRightGroupbox("Play Event (Legacy Toggle)")
+    if not Toggles.AutoPlayEvent then
+        PlayGB:AddToggle("AutoPlayEvent", { Text = "Auto Play Swarm Event", Default = false })
+        PlayGB:AddSlider("PlayCooldown", { Text = "Cooldown (sec)", Default = 3, Min = 1, Max = 15, Rounding = 0 })
+    end
+end
+
+local function _setSwarmPair(value)
+    if _syncSwarm then return end
+    _syncSwarm = true
+    if Toggles.CR_AutoJoinSwarm then Toggles.CR_AutoJoinSwarm:SetValue(value) end
+    if Toggles.AutoPlayEvent then Toggles.AutoPlayEvent:SetValue(value) end
+    _syncSwarm = false
+end
+
+-- Event toggle handlers (for legacy)
+if Toggles.AutoPlayEvent then
+    Toggles.AutoPlayEvent:OnChanged(function(v)
+        if v then startAutoPlayWatcher() else stopAutoPlayWatcher() end
+        if not _syncSwarm then _setSwarmPair(v) end
+    end)
+    if Toggles.AutoPlayEvent.Value then startAutoPlayWatcher() end
+end
+
+-- Create Room toggles
+Toggles.CR_AutoJoinSwarm:OnChanged(function(v)
+    if v then
+        startSwarmJoin()
+        startAutoPlayWatcher() -- ให้ทำงานได้ทั้งสองแบบ
+    else
+        stopSwarmJoin()
+        stopAutoPlayWatcher()
+    end
+    if not _syncSwarm then _setSwarmPair(v) end
+end)
+
+Toggles.CR_AutoJoinAdventure:OnChanged(function(v)
+    if v then startAdventureJoin() else stopAdventureJoin() end
+end)
+
+-- ===== Create Room base actions =====
 local function doOpenCreatePane()
     clickIfExists({"Players", player.Name, "PlayerGui","HUD","MenuFrame","LeftSide","Frame","PlayRoom"}, 3)
     task.wait(0.15)
@@ -594,5 +768,3 @@ SaveManager:LoadAutoloadConfig()
 Library:OnUnload(function()
 	print("[UI] Unloaded.")
 end)
-
-
