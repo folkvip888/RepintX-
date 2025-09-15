@@ -2,7 +2,7 @@
 -- UI (Obsidian/Linoria) + Event + Game + Create Room + UI Settings (All-in-One)
 --  - Event: Auto Restart @2/2, Auto Hide Rewards UI, Auto Play Swarm Event
 --  - Game : Auto Retry / Auto Next / Auto Vote Game / AutoPlay (Bool) + Redeem All Codes (0.35s delay)
---  - Create Room: Map/Chapter (with Scrolling), Difficulty, FriendOnly, AutoStart
+--  - Create Room: Stage (Story/Ranger/Raids/Infinite) + Map/Chapter (with Scrolling), Difficulty, FriendOnly, AutoStart
 --====================================================
 
 -- libs
@@ -105,6 +105,138 @@ local function spamVote(remoteName, duration, interval)
 	end
 end
 
+-- ===== Click/Scroll helpers =====
+local function findFirstClickable(container)
+    if not container then return nil end
+    for _, d in ipairs(container:GetDescendants()) do
+        if d.Name == "Click" and (d:IsA("TextButton") or d:IsA("ImageButton")) then return d end
+        if d:IsA("TextButton") or d:IsA("ImageButton") then return d end
+    end
+    if container:IsA("TextButton") or container:IsA("ImageButton") then return container end
+    return nil
+end
+
+local function clickIfExists(pathParts, timeout)
+    local node = safeWaitPath(game, pathParts, timeout or 8)
+    if not node then return false end
+    local btn = findFirstClickable(node)
+    if not btn then return false end
+    clickGuiObject(btn)
+    return true
+end
+
+local function scrollIntoViewAndClick(sf, target)
+    if not (sf and target and sf:IsA("ScrollingFrame")) then return false end
+    local function clamp(n, a, b) if n < a then return a elseif n > b then return b else return n end end
+    local yInView = (target.AbsolutePosition.Y - sf.AbsolutePosition.Y) + sf.CanvasPosition.Y
+    local desired = yInView - (sf.AbsoluteSize.Y * 0.35)
+    local maxY = math.max(0, sf.AbsoluteCanvasSize.Y - sf.AbsoluteSize.Y)
+    sf.CanvasPosition = Vector2.new(0, clamp(desired, 0, maxY))
+    task.wait(0.06)
+    local btn = findFirstClickable(target)
+    if btn then clickGuiObject(btn); return true end
+    return false
+end
+
+local function scrollClickByName(sf, childName)
+    if not (sf and childName) then return false end
+    local target = sf:FindFirstChild(childName)
+    if not target then
+        for _, c in ipairs(sf:GetChildren()) do
+            if c.Name and c.Name:lower():find(childName:lower(), 1, true) then target = c; break end
+        end
+    end
+    if not target then return false end
+    return scrollIntoViewAndClick(sf, target)
+end
+
+local function chapterButtonName(mapKey, chapterNum)
+    return ("%s_Chapter%d"):format(mapKey, chapterNum)
+end
+
+--====================================================
+-- Stage_Select Support (Story / Ranger / Raids / Infinite)
+--====================================================
+local STAGE_LIST = { "Story", "Ranger", "Raids", "Infinite" }
+
+local function selectStageMode(mode)
+    mode = mode or "Story"
+    local node = safeWaitPath(pg, {"PlayRoom","Main","GameStage","Main","Stage_Select", mode}, 3)
+    if not node then return false end
+    local btn = findFirstClickable(node) or node
+    if btn then
+        clickGuiObject(btn)
+        return true
+    end
+    return false
+end
+
+local function getStageRoots(stage)
+    stage = stage or "Story"
+    local baseRoot = safeWaitPath(pg, {"PlayRoom","Main","GameStage","Main","Base", stage}, 0.2)
+    local selRoot  = safeWaitPath(pg, {"PlayRoom","Main","GameStage","Main","Stage_Select", stage}, 0.2)
+    return baseRoot, selRoot
+end
+
+local function getMapScrollForStage(stage)
+    local baseRoot, selRoot = getStageRoots(stage)
+    local function pickSF(root)
+        if not root then return nil end
+        return root:FindFirstChild("ScrollingFrame") or root:FindFirstChildWhichIsA("ScrollingFrame")
+    end
+    return pickSF(baseRoot) or pickSF(selRoot)
+end
+
+local function getChapterRoot(stage, mapName)
+    local root = safeWaitPath(pg, {"PlayRoom","Main","GameStage","Main","Base","Chapter", mapName}, 0.5)
+    if root then return root end
+    local _, selRoot = getStageRoots(stage)
+    if selRoot then
+        local ch = selRoot:FindFirstChild("Chapter")
+        if ch and ch:FindFirstChild(mapName) then return ch[mapName] end
+    end
+    local anyChapter = safeWaitPath(pg, {"PlayRoom","Main","GameStage","Main"}, 0.2)
+    if anyChapter then
+        local found = anyChapter:FindFirstChild("Chapter", true)
+        if found and found:FindFirstChild(mapName) then return found[mapName] end
+    end
+    return nil
+end
+
+local function selectMapForStage(stage, mapName)
+    local sf = getMapScrollForStage(stage)
+    if not sf then return false end
+    return scrollClickByName(sf, mapName)
+end
+
+local function selectChapterForStage(stage, mapName, chapterNum)
+    local chapRoot = getChapterRoot(stage, mapName)
+    if not chapRoot then return false end
+
+    local container = chapRoot:FindFirstChild(("%s_Chapter1-10"):format(mapName))
+    if container then
+        local sf = container:FindFirstChildWhichIsA("ScrollingFrame") or container
+        local name = chapterButtonName(mapName, chapterNum)
+        if sf:IsA("ScrollingFrame") then
+            return scrollClickByName(sf, name)
+        else
+            local target = container:FindFirstChild(name)
+            if target then
+                local btn = findFirstClickable(target)
+                if btn then clickGuiObject(btn); return true end
+            end
+        end
+        return false
+    else
+        local directBtn = chapRoot:FindFirstChild(chapterButtonName(mapName, chapterNum))
+        if directBtn then
+            local parentSF = chapRoot:FindFirstChildWhichIsA("ScrollingFrame") or chapRoot
+            return scrollIntoViewAndClick(parentSF, directBtn)
+        end
+    end
+    return false
+end
+
 --====================================================
 -- ===================== EVENT TAB ===================
 --====================================================
@@ -173,6 +305,7 @@ if Toggles.AutoHideRewards.Value then startAutoHideWatcher() end
 local PlayGB = Tabs.Event:AddRightGroupbox("Play Event")
 PlayGB:AddToggle("AutoPlayEvent", { Text = "Auto Play Swarm Event", Default = false })
 PlayGB:AddSlider("PlayCooldown", { Text = "Cooldown (sec)", Default = 3, Min = 1, Max = 15, Rounding = 0 })
+
 local function tryOpenSwarmEventMenu()
     local openBtn = safeWaitPath(pg, {"HUD","MenuFrame","RightSide","Swarm Event"}, 3)
     if openBtn and openBtn.Visible then
@@ -182,6 +315,7 @@ local function tryOpenSwarmEventMenu()
     end
     return false
 end
+
 local function tryPressSwarmEventPlay()
     local playBtn = safeWaitPath(pg, {"Swarm Event","Main","Tabs","Play"}, 3)
     if playBtn and playBtn.Visible then
@@ -191,6 +325,7 @@ local function tryPressSwarmEventPlay()
     end
     return false
 end
+
 local AutoPlayState = { running = false, token = 0, lastTick = 0 }
 local function startAutoPlayWatcher()
     if AutoPlayState.running then return end
@@ -289,7 +424,7 @@ GameRight:AddButton("Redeem All Codes", function()
             local args = { [1] = code }
             local ok = pcall(function() remote:FireServer(unpack(args)) end)
             if ok then okCount += 1 else failCount += 1 end
-            task.wait(0.35) -- หน่วง 0.35 วิ ต่อ 1 โค้ด
+            task.wait(0.35)
         end
         Library:Notify(("Redeem Done! OK:%d Fail:%d"):format(okCount, failCount), 4)
     end)
@@ -297,62 +432,28 @@ end)
 
 --====================================================
 -- ==================== CREATE ROOM ==================
---  Map/Chapter Scrolling + Difficulty + FriendOnly + AutoStart
+--  Stage + Map/Chapter Scrolling + Difficulty + FriendOnly + AutoStart
 --====================================================
-local function findFirstClickable(container)
-    if not container then return nil end
-    for _, d in ipairs(container:GetDescendants()) do
-        if d.Name == "Click" and (d:IsA("TextButton") or d:IsA("ImageButton")) then return d end
-        if d:IsA("TextButton") or d:IsA("ImageButton") then return d end
-    end
-    if container:IsA("TextButton") or container:IsA("ImageButton") then return container end
-    return nil
-end
-local function clickIfExists(pathParts, timeout)
-    local node = safeWaitPath(game, pathParts, timeout or 8)
-    if not node then return false end
-    local btn = findFirstClickable(node)
-    if not btn then return false end
-    clickGuiObject(btn)
-    return true
-end
-local function scrollIntoViewAndClick(sf, target)
-    if not (sf and target and sf:IsA("ScrollingFrame")) then return false end
-    local function clamp(n, a, b) if n < a then return a elseif n > b then return b else return n end end
-    local yInView = (target.AbsolutePosition.Y - sf.AbsolutePosition.Y) + sf.CanvasPosition.Y
-    local desired = yInView - (sf.AbsoluteSize.Y * 0.35)
-    local maxY = math.max(0, sf.AbsoluteCanvasSize.Y - sf.AbsoluteSize.Y)
-    sf.CanvasPosition = Vector2.new(0, clamp(desired, 0, maxY))
-    task.wait(0.06)
-    local btn = findFirstClickable(target)
-    if btn then clickGuiObject(btn); return true end
-    return false
-end
-local function scrollClickByName(sf, childName)
-    if not (sf and childName) then return false end
-    local target = sf:FindFirstChild(childName)
-    if not target then
-        for _, c in ipairs(sf:GetChildren()) do
-            if c.Name and c.Name:lower():find(childName:lower(), 1, true) then target = c; break end
-        end
-    end
-    if not target then return false end
-    return scrollIntoViewAndClick(sf, target)
-end
-local function chapterButtonName(mapKey, chapterNum)
-    return ("%s_Chapter%d"):format(mapKey, chapterNum)
-end
+local CreateCfg = {
+    Stage = "Story",  -- "Story" | "Ranger" | "Raids" | "Infinite"
+    Map = "OnePiece",
+    Chapter = 1,
+    FriendsOnly = false,
+    AutoStart = false,
+    Difficulty = "Normal"
+}
 
-local CreateCfg = { Map = "OnePiece", Chapter = 1, FriendsOnly = false, AutoStart = false, Difficulty = "Normal" }
 local MAP_LIST = {
     "Berserk","BizzareRace","ChainsawMan","DBZ2","JojoPart1",
     "Namek","Naruto","OnePiece","OPM","SAO","SoloLeveling",
     "SoulSociety","TokyoGhoul","DemonSlayer"
 }
-local function getAvailableMaps()
+
+local function getAvailableMaps(stage)
+    stage = stage or "Story"
     local maps, seen = {}, {}
     for _, m in ipairs(MAP_LIST) do seen[m] = true; table.insert(maps, m) end
-    local sf = safeWaitPath(pg, {"PlayRoom","Main","GameStage","Main","Base","Story","ScrollingFrame"}, 0.8)
+    local sf = getMapScrollForStage(stage)
     if sf then
         for _, child in ipairs(sf:GetChildren()) do
             if child.Name and child.Name ~= "UIListLayout" and child.Name ~= "UIPadding" then
@@ -366,88 +467,103 @@ end
 local CR_Left  = Tabs["Create Room"]:AddLeftGroupbox("Setup")
 local CR_Right = Tabs["Create Room"]:AddRightGroupbox("Actions")
 
-local mapValues = getAvailableMaps()
-CR_Left:AddDropdown("CR_Map", { Text = "Map (Story)", Values = mapValues, Default = CreateCfg.Map })
-Options.CR_Map:OnChanged(function(v) CreateCfg.Map = v end)
+-- Stage dropdown
+CR_Left:AddDropdown("CR_Stage", { Text = "Stage", Values = STAGE_LIST, Default = CreateCfg.Stage })
+Options.CR_Stage:OnChanged(function(v) CreateCfg.Stage = v end)
 
+-- Map dropdown (refresh on Stage change)
+local function refreshMapDropdown()
+    local vals = getAvailableMaps(CreateCfg.Stage)
+    if Options.CR_Map and Options.CR_Map.SetValues then
+        Options.CR_Map:SetValues(vals)
+        local exists = false
+        for _, n in ipairs(vals) do if n == CreateCfg.Map then exists = true break end end
+        if not exists then
+            CreateCfg.Map = vals[1] or "OnePiece"
+            if Options.CR_Map.SetValue then Options.CR_Map:SetValue(CreateCfg.Map) end
+        end
+    end
+end
+local mapValues = getAvailableMaps(CreateCfg.Stage)
+CR_Left:AddDropdown("CR_Map", { Text = "Map", Values = mapValues, Default = CreateCfg.Map })
+Options.CR_Map:OnChanged(function(v) CreateCfg.Map = v end)
+Options.CR_Stage:OnChanged(function() task.defer(refreshMapDropdown) end)
+
+-- Chapter dropdown
 local chapValues = {}; for i = 1, 10 do chapValues[i] = tostring(i) end
 CR_Left:AddDropdown("CR_Chapter", { Text = "Chapter", Values = chapValues, Default = tostring(CreateCfg.Chapter) })
 Options.CR_Chapter:OnChanged(function(v) local n=tonumber(v) or 1 if n<1 then n=1 elseif n>10 then n=10 end CreateCfg.Chapter=n end)
 
+-- Difficulty dropdown
 CR_Left:AddDropdown("CR_Diff", { Text = "Difficulty", Values = {"Normal","Hard","Nightmare"}, Default = CreateCfg.Difficulty })
 Options.CR_Diff:OnChanged(function(v) CreateCfg.Difficulty = v end)
 
+-- Friends Only + AutoStart
 CR_Left:AddToggle("CR_FriendsOnly", { Text = "Friends Only", Default = CreateCfg.FriendsOnly })
 Toggles.CR_FriendsOnly:OnChanged(function(v)
     CreateCfg.FriendsOnly = v
     clickIfExists({"Players", player.Name, "PlayerGui","PlayRoom","Main","GameStage","Main","Base","Misc","FriendOnly"}, 2)
 end)
-
 CR_Left:AddToggle("CR_AutoStart", { Text = "Auto Start After Create", Default = CreateCfg.AutoStart })
 Toggles.CR_AutoStart:OnChanged(function(v) CreateCfg.AutoStart = v end)
 
+-- Actions
 local function doOpenCreatePane()
     clickIfExists({"Players", player.Name, "PlayerGui","HUD","MenuFrame","LeftSide","Frame","PlayRoom"}, 3)
     task.wait(0.15)
     clickIfExists({"Players", player.Name, "PlayerGui","PlayRoom","Main","Button","Create"}, 3)
 end
-local function selectMapInScroll(mapName)
-    local sf = safeWaitPath(pg, {"PlayRoom","Main","GameStage","Main","Base","Story","ScrollingFrame"}, 4)
-    if not sf then return false end
-    return scrollClickByName(sf, mapName)
-end
-local function selectChapterInScroll(mapName, chapterNum)
-    local basePath = {"PlayRoom","Main","GameStage","Main","Base","Chapter", mapName}
-    local chapRoot = safeWaitPath(pg, basePath, 3)
-    if not chapRoot then return false end
-    local container = chapRoot:FindFirstChild(mapName.."_Chapter1-10")
-    if not container then
-        local directBtn = chapRoot:FindFirstChild(chapterButtonName(mapName, chapterNum))
-        if directBtn then
-            local sfParent = chapRoot:FindFirstChildWhichIsA("ScrollingFrame") or chapRoot
-            return scrollIntoViewAndClick(sfParent, directBtn)
-        end
-        return false
-    end
-    local sf = container:FindFirstChildWhichIsA("ScrollingFrame") or container
-    local chapterName = chapterButtonName(mapName, chapterNum)
-    if sf:IsA("ScrollingFrame") then
-        return scrollClickByName(sf, chapterName)
-    else
-        local target = container:FindFirstChild(chapterName)
-        if target then local btn = findFirstClickable(target) if btn then clickGuiObject(btn); return true end end
-    end
-    return false
-end
+
 local function selectDifficulty(diffName)
     local path = {"Players", player.Name, "PlayerGui","PlayRoom","Main","GameStage","Main","Base","DifficultyButton", diffName}
     local clicked = clickIfExists(path, 2)
     if not clicked then
         local node = safeWaitPath(game, path, 1)
-        if node then local btn = findFirstClickable(node) if btn then clickGuiObject(btn); clicked = true end end
+        if node then
+            local btn = findFirstClickable(node)
+            if btn then clickGuiObject(btn); clicked = true end
+        end
     end
     return clicked
 end
+
 local function doCreateRoom()
     doOpenCreatePane()
     task.wait(0.15)
-    selectMapInScroll(CreateCfg.Map)
-    task.wait(0.15)
-    selectChapterInScroll(CreateCfg.Map, CreateCfg.Chapter)
+
+    -- 1) เลือก Stage
+    selectStageMode(CreateCfg.Stage)
     task.wait(0.12)
+
+    -- 2) เลือก Map ตาม Stage
+    selectMapForStage(CreateCfg.Stage, CreateCfg.Map)
+    task.wait(0.12)
+
+    -- 3) เลือก Chapter
+    selectChapterForStage(CreateCfg.Stage, CreateCfg.Map, CreateCfg.Chapter)
+    task.wait(0.10)
+
+    -- 4) เลือกความยาก
     selectDifficulty(CreateCfg.Difficulty)
     task.wait(0.06)
+
+    -- 5) Friends Only (ถ้าเปิด)
     if CreateCfg.FriendsOnly then
         clickIfExists({"Players", player.Name, "PlayerGui","PlayRoom","Main","GameStage","Main","Base","Misc","FriendOnly"}, 1.0)
         task.wait(0.05)
     end
+
+    -- 6) Create
     clickIfExists({"Players", player.Name, "PlayerGui","PlayRoom","Main","GameStage","Main","Base","Button","Create"}, 2.5)
+
+    -- 7) Auto Start
     if CreateCfg.AutoStart then
         task.wait(0.35)
         local okStart = clickIfExists({"Players", player.Name, "PlayerGui","PlayRoom","Main","Game_Submit","Button","Start"}, 2.0)
         if not okStart then Library:Notify("Start button not found (กดเองได้)", 3) end
     end
 end
+
 CR_Right:AddButton("Open PlayRoom (Create)", function() doOpenCreatePane() end)
 CR_Right:AddButton("Create Room Now", function() task.spawn(doCreateRoom) end)
 
