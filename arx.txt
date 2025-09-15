@@ -243,7 +243,7 @@ end
 -- Auto Restart @ 2/2
 local AutoGB = Tabs.Event:AddLeftGroupbox("Auto Restart / Vote")
 
-AutoGB:AddToggle("AutoRestartTwoOfTwo", { Text = "Auto Restart at 2/2", Default = false })
+AutoGB:AddToggle("AutoRestartTwoOfTwo", { Text = "Auto Use Bug Swarm Event ", Default = false })
 AutoGB:AddSlider("RetryDuration", { Text = "Spam Duration (sec)", Default = 10, Min = 3, Max = 30, Rounding = 0 })
 AutoGB:AddSlider("RetryInterval", { Text = "Spam Interval (sec)", Default = 0.25, Min = 0.05, Max = 1.0, Rounding = 2 })
 AutoGB:AddLabel("Hotkey"):AddKeyPicker("AutoRestartKey", { Default = "F6", Mode = "Toggle", Text = "Toggle Auto Restart", NoUI = false, SyncToggleState = true })
@@ -594,3 +594,4 @@ SaveManager:LoadAutoloadConfig()
 Library:OnUnload(function()
 	print("[UI] Unloaded.")
 end)
+
