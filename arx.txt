@@ -241,7 +241,7 @@ end
 -- ===================== EVENT TAB ===================
 --====================================================
 -- Auto Restart @ 2/2
-local AutoGB = Tabs.Event:AddLeftGroupbox("Auto Restart / Vote")
+local AutoGB = Tabs.Event:AddLeftGroupbox("BugGame")
 
 AutoGB:AddToggle("AutoRestartTwoOfTwo", { Text = "Auto Use Bug Swarm Event ", Default = false })
 AutoGB:AddSlider("RetryDuration", { Text = "Spam Duration (sec)", Default = 10, Min = 3, Max = 30, Rounding = 0 })
@@ -594,4 +594,5 @@ SaveManager:LoadAutoloadConfig()
 Library:OnUnload(function()
 	print("[UI] Unloaded.")
 end)
+
 
