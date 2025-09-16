@@ -526,7 +526,7 @@ local ALL_CODES = {
     "!MattLovesARX2","!RaitoLovesARX","QuickFix!!","MoreFixs","Sorry4AutoTraitRoll","Sorry4EvoUnits",
     "SorryDelay!!!","SummerEvent!","2xWeekEnd!","Sorry4Quest","SorryRaids","RAIDS","BizzareUpdate2!",
     "Sorry4Delays","HBDTanny","JoJo Part 1","NewLobby","Instant Trait","CODEISREAL","ragebait",
-    "PortalsFix","UPDATE 1.5","THANKYOU4PATIENCE"
+    "PortalsFix","UPDATE 1.5","THANKYOU4PATIENCE","FreeCyclopsSoul","SorryForShutdownBlameZaru"
 }
 GameRight:AddButton("Redeem All Codes", function()
     task.spawn(function()
