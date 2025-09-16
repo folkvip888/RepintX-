@@ -1,48 +1,61 @@
 --====================================================
--- RepintX (Obsidian/Linoria) - Event + Game + Create Room + UI Settings
+-- RepintX (Obsidian/Linoria) - Event + Game + Create Room + UI Settings + Webhooks
 --  Event : Auto Restart @2/2, Auto Hide Rewards UI, Adventure Votes (Endure/Evade)
 --           Auto Join: Swarm / Adventure / Expedition (toggle + cooldown)
 --  Game  : Auto Retry/Next/Playing votes, AutoPlay bool, Redeem Codes (0.35s),
 --           Use Auto Trait Reroll (Gamepass) + Use 3x Game Speed (Gamepass + click)
 --  Create Room: Stage/Map/Chapter/Difficulty/FriendOnly + AutoStart
+--  Webhooks : Textbox URL, Test Webhooks button (custom payload), Auto Webhook on Match End
 --====================================================
 
--- libs
-local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
-local Library = loadstring(game:HttpGet(repo .. "Library.lua"))()
+--====================================================
+-- Libraries
+--====================================================
+local repo         = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
+local Library      = loadstring(game:HttpGet(repo .. "Library.lua"))()
 local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
 local SaveManager  = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
 
 Library.ForceCheckbox = false
 Library.ShowToggleFrameInKeybinds = true
 
--- Window/Tabs
+--====================================================
+-- Window / Tabs
+--====================================================
 local Window = Library:CreateWindow({
-    Title = "RepintX",
-    Footer = "version: example",
-    Icon = 95816097006870,
-    NotifySide = "Right",
+    Title            = "RepintX",
+    Footer           = "version: example",
+    Icon             = 95816097006870,
+    NotifySide       = "Right",
     ShowCustomCursor = true,
-    AutoShow = true,
+    AutoShow         = true,
 })
+
 local Tabs = {
-    Game   = Window:AddTab("Game", "gamepad-2"),
-    Event  = Window:AddTab("Event", "activity"),
+    Game            = Window:AddTab("Game", "gamepad-2"),
+    Event           = Window:AddTab("Event", "activity"),
     ["Create Room"] = Window:AddTab("Create Room", "plus-square"),
     ["UI Settings"] = Window:AddTab("UI Settings", "settings"),
+    Webhooks        = Window:AddTab("Webhooks", "link"),
 }
+
 local Options, Toggles = Library.Options, Library.Toggles
 
 --====================================================
--- Helpers
+-- Services / Globals
 --====================================================
-local Players = game:GetService("Players")
+local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local GuiService = game:GetService("GuiService")
-local VIM = game:GetService("VirtualInputManager")
-local player = Players.LocalPlayer
-local pg = player:WaitForChild("PlayerGui")
+local GuiService        = game:GetService("GuiService")
+local VIM               = game:GetService("VirtualInputManager")
+local HttpService       = game:GetService("HttpService")
 
+local player = Players.LocalPlayer
+local pg     = player:WaitForChild("PlayerGui")
+
+--====================================================
+-- Helper Functions (generic)
+--====================================================
 local function safeWaitPath(root, path, timeout)
     local node, t0 = root, os.clock()
     for i, name in ipairs(path) do
@@ -54,7 +67,9 @@ local function safeWaitPath(root, path, timeout)
                 task.wait(0.2)
             until (os.clock() - t0) >= (timeout or 10)
         end
-        if not found then return nil, ("missing: %s (idx %d)"):format(name, i) end
+        if not found then
+            return nil, ("missing: %s (idx %d)"):format(name, i)
+        end
         node = found
     end
     return node
@@ -63,18 +78,24 @@ end
 local function findFirstClickable(container)
     if not container then return nil end
     for _, d in ipairs(container:GetDescendants()) do
-        if d.Name == "Click" and (d:IsA("TextButton") or d:IsA("ImageButton")) then return d end
-        if d:IsA("TextButton") or d:IsA("ImageButton") then return d end
+        if d.Name == "Click" and (d:IsA("TextButton") or d:IsA("ImageButton")) then
+            return d
+        end
+        if d:IsA("TextButton") or d:IsA("ImageButton") then
+            return d
+        end
     end
-    if container:IsA("TextButton") or container:IsA("ImageButton") then return container end
+    if container:IsA("TextButton") or container:IsA("ImageButton") then
+        return container
+    end
     return nil
 end
 
 local function clickGuiObject(obj)
     if not obj then return end
-    local inset = GuiService:GetGuiInset()
+    local inset  = GuiService:GetGuiInset()
     local center = obj.AbsolutePosition + (obj.AbsoluteSize / 2)
-    VIM:SendMouseButtonEvent(center.X, center.Y + inset.Y, 0, true, obj, 0)
+    VIM:SendMouseButtonEvent(center.X, center.Y + inset.Y, 0, true,  obj, 0)
     VIM:SendMouseButtonEvent(center.X, center.Y + inset.Y, 0, false, obj, 0)
 end
 
@@ -98,7 +119,9 @@ local function wavesIsTwoOfTwo(wavesLabel)
     return (txt == "2/2") or (txt:find("2%s*/%s*2") ~= nil)
 end
 
--- vote remotes
+--====================================================
+-- Remote Helpers (Voting)
+--====================================================
 local function getVoteRemote(key)
     local ok, r = pcall(function()
         return ReplicatedStorage
@@ -110,6 +133,7 @@ local function getVoteRemote(key)
     end)
     return ok and r or nil
 end
+
 local function spamVote(remoteName, duration, interval)
     duration = duration or 5
     interval = interval or 0.25
@@ -122,7 +146,9 @@ local function spamVote(remoteName, duration, interval)
     end
 end
 
--- scroll helpers (for Create Room)
+--====================================================
+-- Scroll / Click Helpers (Create Room lists)
+--====================================================
 local function scrollIntoViewAndClick(sf, target)
     if not (sf and target and sf:IsA("ScrollingFrame")) then return false end
     local function clamp(n, a, b) if n < a then return a elseif n > b then return b else return n end end
@@ -134,6 +160,7 @@ local function scrollIntoViewAndClick(sf, target)
     if btn then clickGuiObject(btn); return true end
     return false
 end
+
 local function scrollClickByName(sf, childName)
     if not (sf and childName) then return false end
     local target = sf:FindFirstChild(childName)
@@ -147,23 +174,26 @@ local function scrollClickByName(sf, childName)
 end
 
 --====================================================
--- Stage_Select Support (Story / Ranger / Raids / Infinite)
+-- Stage_Select (Story / Ranger / Raids / Infinite)
 --====================================================
 local STAGE_LIST = { "Story", "Ranger", "Raids", "Infinite" }
+
 local function selectStageMode(mode)
     mode = mode or "Story"
-    local node = safeWaitPath(pg, {"PlayRoom","Main","GameStage","Main","Stage_Select", mode}, 3)
+    local node = safeWaitPath(pg, { "PlayRoom", "Main", "GameStage", "Main", "Stage_Select", mode }, 3)
     if not node then return false end
     local btn = findFirstClickable(node) or node
     if btn then clickGuiObject(btn); return true end
     return false
 end
+
 local function getStageRoots(stage)
     stage = stage or "Story"
-    local baseRoot = safeWaitPath(pg, {"PlayRoom","Main","GameStage","Main","Base", stage}, 0.2)
-    local selRoot  = safeWaitPath(pg, {"PlayRoom","Main","GameStage","Main","Stage_Select", stage}, 0.2)
+    local baseRoot = safeWaitPath(pg, { "PlayRoom", "Main", "GameStage", "Main", "Base", stage }, 0.2)
+    local selRoot  = safeWaitPath(pg, { "PlayRoom", "Main", "GameStage", "Main", "Stage_Select", stage }, 0.2)
     return baseRoot, selRoot
 end
+
 local function getMapScrollForStage(stage)
     local baseRoot, selRoot = getStageRoots(stage)
     local function pickSF(root)
@@ -172,26 +202,29 @@ local function getMapScrollForStage(stage)
     end
     return pickSF(baseRoot) or pickSF(selRoot)
 end
+
 local function getChapterRoot(stage, mapName)
-    local root = safeWaitPath(pg, {"PlayRoom","Main","GameStage","Main","Base","Chapter", mapName}, 0.5)
+    local root = safeWaitPath(pg, { "PlayRoom", "Main", "GameStage", "Main", "Base", "Chapter", mapName }, 0.5)
     if root then return root end
     local _, selRoot = getStageRoots(stage)
     if selRoot then
         local ch = selRoot:FindFirstChild("Chapter")
         if ch and ch:FindFirstChild(mapName) then return ch[mapName] end
     end
-    local any = safeWaitPath(pg, {"PlayRoom","Main","GameStage","Main"}, 0.2)
+    local any = safeWaitPath(pg, { "PlayRoom", "Main", "GameStage", "Main" }, 0.2)
     if any then
         local found = any:FindFirstChild("Chapter", true)
         if found and found:FindFirstChild(mapName) then return found[mapName] end
     end
     return nil
 end
+
 local function selectMapForStage(stage, mapName)
     local sf = getMapScrollForStage(stage)
     if not sf then return false end
     return scrollClickByName(sf, mapName)
 end
+
 local function selectChapterForStage(stage, mapName, chapterNum)
     local chapRoot = getChapterRoot(stage, mapName)
     if not chapRoot then return false end
@@ -220,11 +253,11 @@ local function selectChapterForStage(stage, mapName, chapterNum)
 end
 
 --====================================================
--- Shared Join Helpers: Swarm / Adventure / Expedition
+-- Shared Join Helpers (Swarm / Adventure / Expedition)
 --====================================================
 -- Swarm
 local function tryOpenSwarmEventMenu()
-    local openBtn = safeWaitPath(pg, {"HUD","MenuFrame","RightSide","Swarm Event"}, 3)
+    local openBtn = safeWaitPath(pg, { "HUD", "MenuFrame", "RightSide", "Swarm Event" }, 3)
     if openBtn and openBtn.Visible then
         local clickObj = openBtn:FindFirstChild("Click") or openBtn
         pcall(function() clickGuiObject(clickObj) end)
@@ -232,8 +265,9 @@ local function tryOpenSwarmEventMenu()
     end
     return false
 end
+
 local function tryPressSwarmEventPlay()
-    local playBtn = safeWaitPath(pg, {"Swarm Event","Main","Tabs","Play"}, 3)
+    local playBtn = safeWaitPath(pg, { "Swarm Event", "Main", "Tabs", "Play" }, 3)
     if playBtn and playBtn.Visible then
         local clickable = playBtn:FindFirstChild("Click") or playBtn
         pcall(function() clickGuiObject(clickable) end)
@@ -244,35 +278,38 @@ end
 
 -- Adventure
 local function tryOpenAdventureGamemode()
-    local adv = pg:FindFirstChild("Adventure Gamemode") or select(1, safeWaitPath(pg, {"Adventure Gamemode"}, 2))
+    local adv = pg:FindFirstChild("Adventure Gamemode") or select(1, safeWaitPath(pg, { "Adventure Gamemode" }, 2))
     if adv and adv:IsA("ScreenGui") then
         pcall(function() adv.Enabled = true end)
         return true
     end
     return false
 end
+
 local function tryPressAdventurePlay()
-    local btn = safeWaitPath(pg, {"Adventure Gamemode","Main","Base","Button","Play"}, 3)
+    local btn = safeWaitPath(pg, { "Adventure Gamemode", "Main", "Base", "Button", "Play" }, 3)
     if not btn then return false end
     local clickObj = findFirstClickable(btn) or btn
     if clickObj then pcall(function() clickGuiObject(clickObj) end) return true end
     return false
 end
+
 local function tryPlayroomStart()
-    return clickIfExists({"Players", player.Name, "PlayerGui","PlayRoom","Main","Game_Submit","Button","Start"}, 2.0)
+    return clickIfExists({ "Players", player.Name, "PlayerGui", "PlayRoom", "Main", "Game_Submit", "Button", "Start" }, 2.0)
 end
 
 -- Expedition
 local function tryOpenExpeditionMode()
-    local exp = pg:FindFirstChild("Expedition Mode") or select(1, safeWaitPath(pg, {"Expedition Mode"}, 2))
+    local exp = pg:FindFirstChild("Expedition Mode") or select(1, safeWaitPath(pg, { "Expedition Mode" }, 2))
     if exp and exp:IsA("ScreenGui") then
         pcall(function() exp.Enabled = true end)
         return true
     end
     return false
 end
+
 local function tryPressExpeditionPlay()
-    local btn = safeWaitPath(pg, {"Expedition Mode","Main","Base","Button","Play"}, 3)
+    local btn = safeWaitPath(pg, { "Expedition Mode", "Main", "Base", "Button", "Play" }, 3)
     if not btn then return false end
     local clickObj = findFirstClickable(btn) or btn
     if clickObj then pcall(function() clickGuiObject(clickObj) end) return true end
@@ -280,9 +317,9 @@ local function tryPressExpeditionPlay()
 end
 
 --====================================================
--- ===================== EVENT TAB ===================
+-- ======================== EVENT TAB =================
 --====================================================
--- Auto Restart @ 2/2
+-- Auto Restart / Vote
 local AutoGB = Tabs.Event:AddLeftGroupbox("Auto Restart / Vote")
 AutoGB:AddToggle("AutoRestartTwoOfTwo", { Text = "Auto Restart at 2/2", Default = false })
 AutoGB:AddSlider("RetryDuration", { Text = "Spam Duration (sec)", Default = 10, Min = 3, Max = 30, Rounding = 0 })
@@ -297,12 +334,12 @@ local function startAutoRestartWatcher()
     AutoRestartState.token += 1
     local myToken = AutoRestartState.token
     task.spawn(function()
-        local wavesLabel = safeWaitPath(pg, {"HUD","InGame","Main","TOP","List","Waves","Numbers"}, 15)
+        local wavesLabel = safeWaitPath(pg, { "HUD","InGame","Main","TOP","List","Waves","Numbers" }, 15)
         while AutoRestartState.running and (myToken == AutoRestartState.token) do
             if wavesLabel and wavesIsTwoOfTwo(wavesLabel) then
                 pcall(function() pg.Settings.Enabled = true end)
                 task.wait(0.3)
-                local restartClick = safeWaitPath(pg, {"Settings","Main","Base","Space","ScrollingFrame","Restart Match","Click"}, 3)
+                local restartClick = safeWaitPath(pg, { "Settings","Main","Base","Space","ScrollingFrame","Restart Match","Click" }, 3)
                 if restartClick then clickGuiObject(restartClick) end
                 spamVote("VoteRetry", Options.RetryDuration.Value, Options.RetryInterval.Value)
                 repeat
@@ -330,7 +367,7 @@ local function startAutoHideWatcher()
     AutoHideState.token += 1
     local myToken = AutoHideState.token
     task.spawn(function()
-        local RewardsUI = safeWaitPath(pg, {"RewardsUI"}, 10)
+        local RewardsUI = safeWaitPath(pg, { "RewardsUI" }, 10)
         while AutoHideState.running and (myToken == AutoHideState.token) do
             if RewardsUI and RewardsUI.Enabled == true then pcall(function() RewardsUI.Enabled = false end) end
             task.wait(0.5)
@@ -366,7 +403,7 @@ local function startAdvVoteWatcher()
         while AdvVoteState.running and (myToken == AdvVoteState.token) do
             local prompt = pg:FindFirstChild("AdventureContinuePrompt")
             if prompt and prompt:IsA("ScreenGui") and prompt.Enabled then
-                local side = safeWaitPath(prompt, {"Main","LeftSide","Button"}, 1)
+                local side = safeWaitPath(prompt, { "Main","LeftSide","Button" }, 1)
                 if side then
                     local choose = Toggles.AutoVoteEndure.Value and "Endure" or (Toggles.AutoVoteEvade.Value and "Evade" or nil)
                     if choose and side:FindFirstChild(choose) then
@@ -390,7 +427,7 @@ Toggles.AutoVoteEndure:OnChanged(_refreshAdvVoteWatcher)
 Toggles.AutoVoteEvade:OnChanged(_refreshAdvVoteWatcher)
 _refreshAdvVoteWatcher()
 
--- Auto Join Modes (Event)
+-- Auto Join Modes
 local JoinGB = Tabs.Event:AddRightGroupbox("Auto Join Modes")
 JoinGB:AddToggle("EVT_AutoJoinSwarm",      { Text = "Auto Join: Swarm Event",      Default = false })
 JoinGB:AddToggle("EVT_AutoJoinAdventure",  { Text = "Auto Join: Adventure Gamemode",Default = false })
@@ -468,9 +505,9 @@ Toggles.EVT_AutoJoinAdventure:OnChanged(function(v) if v then startAdventureJoin
 Toggles.EVT_AutoJoinExpedition:OnChanged(function(v) if v then startExpeditionJoin() else stopExpeditionJoin() end end)
 
 --====================================================
--- ====================== GAME TAB ===================
+-- ========================= GAME TAB =================
 --====================================================
--- Voting
+-- Voting Remotes
 local GameGB = Tabs.Game:AddLeftGroupbox("Voting Remotes")
 GameGB:AddToggle("AutoRetry", { Text = "Auto Retry", Default = false })
 GameGB:AddToggle("AutoNext",  { Text = "Auto Next",  Default = false })
@@ -501,17 +538,16 @@ Toggles.AutoRetry:OnChanged(function(v) if v then startVoteLoop("Retry","VoteRet
 Toggles.AutoNext:OnChanged(function(v) if v then startVoteLoop("Next","VoteNext") else stopVoteLoop("Next") end end)
 Toggles.AutoVotePlaying:OnChanged(function(v) if v then startVoteLoop("Play","VotePlaying") else stopVoteLoop("Play") end end)
 
--- AutoPlay Bool
+-- AutoPlay + Redeem Codes
 local GameRight = Tabs.Game:AddRightGroupbox("AutoPlay & Codes")
 GameRight:AddToggle("AutoPlayBool", { Text = "AutoPlay", Default = false })
 local function setAutoPlayBool(enabled)
-    local node = safeWaitPath(ReplicatedStorage, {"Player_Data", player.Name, "Data", "AutoPlay"}, 10)
+    local node = safeWaitPath(ReplicatedStorage, { "Player_Data", player.Name, "Data", "AutoPlay" }, 10)
     if node then setBoolValueSafely(node, enabled) Library:Notify(("AutoPlay set to %s"):format(tostring(enabled)), 3)
     else Library:Notify("AutoPlay path not found.", 3) end
 end
 Toggles.AutoPlayBool:OnChanged(function() setAutoPlayBool(Toggles.AutoPlayBool.Value) end)
 
--- Redeem All Codes (0.35s)
 local ALL_CODES = {
     "NewGearMode?!","SneakyUpdate!","First6.7Update!","CyclopsSoulMine!","CelestialMageOp67",
     "FairyPatch67","ReallySorry4Delay","FallPart2!?!","Sorry6.5UpdateIsReal!!!","FairyTalePeak!",
@@ -530,12 +566,11 @@ local ALL_CODES = {
 }
 GameRight:AddButton("Redeem All Codes", function()
     task.spawn(function()
-        local remote = safeWaitPath(ReplicatedStorage, {"Remote","Server","Lobby","Code"}, 10)
+        local remote = safeWaitPath(ReplicatedStorage, { "Remote","Server","Lobby","Code" }, 10)
         if not remote then Library:Notify("Code Remote not found", 3); return end
         local okCount, failCount = 0, 0
         for _, code in ipairs(ALL_CODES) do
-            local args = { [1] = code }
-            local ok = pcall(function() remote:FireServer(unpack(args)) end)
+            local ok = pcall(function() remote:FireServer(code) end)
             if ok then okCount += 1 else failCount += 1 end
             task.wait(0.35)
         end
@@ -543,19 +578,11 @@ GameRight:AddButton("Redeem All Codes", function()
     end)
 end)
 
--- ===== Gamepasses & Speed =====
--- helpers
-local function getGamepassNode(passName)
-    return safeWaitPath(ReplicatedStorage, {"Player_Data", player.Name, "Gamepass", passName}, 8)
-end
-local function ensureGamepassTrue(passName)
-    local node = getGamepassNode(passName)
-    if node then setBoolValueSafely(node, true); return true end
-    return false
-end
+-- Gamepasses & Speed
+local function getGamepassNode(passName) return safeWaitPath(ReplicatedStorage, { "Player_Data", player.Name, "Gamepass", passName }, 8) end
+local function ensureGamepassTrue(passName) local node = getGamepassNode(passName) if node then setBoolValueSafely(node, true); return true end return false end
 local function press3xSpeed()
-    -- ชื่อ child "3x" ต้องใช้ FindFirstChild
-    local btnParent = safeWaitPath(game, {"Players", player.Name, "PlayerGui","SetSpeed","GameSpeed","framebase","buttons"}, 3)
+    local btnParent = safeWaitPath(game, { "Players", player.Name, "PlayerGui","SetSpeed","GameSpeed","framebase","buttons" }, 3)
     if not btnParent then return false end
     local node = btnParent:FindFirstChild("3x") or btnParent:FindFirstChildWhichIsA("TextButton")
     if not node then return false end
@@ -564,17 +591,12 @@ local function press3xSpeed()
     return false
 end
 
--- UI
 local GamePassGB = Tabs.Game:AddRightGroupbox("Gamepasses & Speed")
 GamePassGB:AddToggle("UseAutoTraitReroll", { Text = "Use Auto Trait Reroll", Default = false })
 GamePassGB:AddToggle("Use3xGameSpeed",    { Text = "Use 3x Game Speed",    Default = false })
 GamePassGB:AddSlider("GamepassEnforceInterval", { Text = "Enforce Interval (sec)", Default = 5, Min = 1, Max = 30, Rounding = 0 })
 
--- watchers
-local GPState = {
-    reroll = { running = false, token = 0 },
-    speed  = { running = false, token = 0 },
-}
+local GPState = { reroll = { running=false, token=0 }, speed = { running=false, token=0 } }
 local function startRerollWatcher()
     local s = GPState.reroll
     if s.running then return end
@@ -597,9 +619,8 @@ local function startSpeedWatcher()
     local my = s.token
     task.spawn(function()
         while s.running and (my == s.token) do
-            -- ถ้าค่าใน ReplicatedStorage เป็น false/fales ให้เปลี่ยนเป็น true เสมอ
             ensureGamepassTrue("3x Game Speed")
-            task.wait(0.5) -- ตามสเปค
+            task.wait(0.5)
             press3xSpeed()
             task.wait(Options.GamepassEnforceInterval.Value or 5)
         end
@@ -612,12 +633,10 @@ Toggles.UseAutoTraitReroll:OnChanged(function(v) if v then startRerollWatcher() 
 Toggles.Use3xGameSpeed:OnChanged(function(v) if v then startSpeedWatcher() else stopSpeedWatcher() end end)
 
 --====================================================
--- ==================== CREATE ROOM ==================
--- (เฉพาะตั้งค่าห้อง/สร้าง; Auto Join ย้ายไป Event แล้ว)
+-- ===================== CREATE ROOM ==================
 --====================================================
 local CreateCfg = { Stage="Story", Map="OnePiece", Chapter=1, FriendsOnly=false, AutoStart=false, Difficulty="Normal" }
 local MAP_LIST = { "Berserk","BizzareRace","ChainsawMan","DBZ2","JojoPart1","Namek","Naruto","OnePiece","OPM","SAO","SoloLeveling","SoulSociety","TokyoGhoul","DemonSlayer" }
-
 local function getAvailableMaps(stage)
     stage = stage or "Story"
     local maps, seen = {}, {}
@@ -666,18 +685,18 @@ Options.CR_Diff:OnChanged(function(v) CreateCfg.Difficulty = v end)
 CR_Left:AddToggle("CR_FriendsOnly", { Text = "Friends Only", Default = CreateCfg.FriendsOnly })
 Toggles.CR_FriendsOnly:OnChanged(function(v)
     CreateCfg.FriendsOnly = v
-    clickIfExists({"Players", player.Name, "PlayerGui","PlayRoom","Main","GameStage","Main","Base","Misc","FriendOnly"}, 2)
+    clickIfExists({ "Players", player.Name, "PlayerGui","PlayRoom","Main","GameStage","Main","Base","Misc","FriendOnly" }, 2)
 end)
 CR_Left:AddToggle("CR_AutoStart", { Text = "Auto Start After Create", Default = CreateCfg.AutoStart })
 Toggles.CR_AutoStart:OnChanged(function(v) CreateCfg.AutoStart = v end)
 
 local function doOpenCreatePane()
-    clickIfExists({"Players", player.Name, "PlayerGui","HUD","MenuFrame","LeftSide","Frame","PlayRoom"}, 3)
+    clickIfExists({ "Players", player.Name, "PlayerGui","HUD","MenuFrame","LeftSide","Frame","PlayRoom" }, 3)
     task.wait(0.15)
-    clickIfExists({"Players", player.Name, "PlayerGui","PlayRoom","Main","Button","Create"}, 3)
+    clickIfExists({ "Players", player.Name, "PlayerGui","PlayRoom","Main","Button","Create" }, 3)
 end
 local function selectDifficulty(diffName)
-    local path = {"Players", player.Name, "PlayerGui","PlayRoom","Main","GameStage","Main","Base","DifficultyButton", diffName}
+    local path = { "Players", player.Name, "PlayerGui","PlayRoom","Main","GameStage","Main","Base","DifficultyButton", diffName }
     local clicked = clickIfExists(path, 2)
     if not clicked then
         local node = safeWaitPath(game, path, 1)
@@ -692,18 +711,289 @@ local function doCreateRoom()
     selectChapterForStage(CreateCfg.Stage, CreateCfg.Map, CreateCfg.Chapter); task.wait(0.10)
     selectDifficulty(CreateCfg.Difficulty);                 task.wait(0.06)
     if CreateCfg.FriendsOnly then
-        clickIfExists({"Players", player.Name, "PlayerGui","PlayRoom","Main","GameStage","Main","Base","Misc","FriendOnly"}, 1.0)
+        clickIfExists({ "Players", player.Name, "PlayerGui","PlayRoom","Main","GameStage","Main","Base","Misc","FriendOnly" }, 1.0)
         task.wait(0.05)
     end
-    clickIfExists({"Players", player.Name, "PlayerGui","PlayRoom","Main","GameStage","Main","Base","Button","Create"}, 2.5)
+    clickIfExists({ "Players", player.Name, "PlayerGui","PlayRoom","Main","GameStage","Main","Base","Button","Create" }, 2.5)
     if CreateCfg.AutoStart then
         task.wait(0.35)
-        local okStart = clickIfExists({"Players", player.Name, "PlayerGui","PlayRoom","Main","Game_Submit","Button","Start"}, 2.0)
+        local okStart = clickIfExists({ "Players", player.Name, "PlayerGui","PlayRoom","Main","Game_Submit","Button","Start" }, 2.0)
         if not okStart then Library:Notify("Start button not found (กดเองได้)", 3) end
     end
 end
 CR_Right:AddButton("Open PlayRoom (Create)", function() doOpenCreatePane() end)
 CR_Right:AddButton("Create Room Now", function() task.spawn(doCreateRoom) end)
+
+--====================================================
+-- ======================= WEBHOOKS TAB =======================
+--====================================================
+local WH_Left  = Tabs.Webhooks:AddLeftGroupbox("Settings")
+local WH_Right = Tabs.Webhooks:AddRightGroupbox("Actions")
+
+-- Textbox: Webhook URL (บันทึกใน SaveManager)
+local DEFAULT_WEBHOOK = ""
+WH_Left:AddInput("WebhookURL", {
+    Text        = "Discord Webhook URL",
+    Default     = DEFAULT_WEBHOOK,
+    Placeholder = "https://discord.com/api/webhooks/...",
+    Numeric     = false,
+    Finished    = true,
+    Tooltip     = "วางลิงก์ Webhook ของ Discord",
+})
+
+local function currentWebhook()
+    local url = Options.WebhookURL and Options.WebhookURL.Value or ""
+    return url
+end
+
+-- สร้าง payload สำหรับ TestWebhooks ตามสเปคที่ผู้ใช้ให้มา
+local function buildCustomTestPayload()
+    -- ดึงค่าจริง
+    local playerName = Players.LocalPlayer and Players.LocalPlayer.Name or "N/A"
+    local mapLabel = safeWaitPath(pg, {"HUD","InGame","Main","GameInfo","Gamemode","Label"}, 1)
+    local mapName = (mapLabel and mapLabel.Text and mapLabel.Text ~= "") and mapLabel.Text or "N/A"
+    local placeId = tostring(game.PlaceId or "N/A")
+
+    -- ฝั่ง Discord
+    local payload = {
+        username   = "RepintX",
+        avatar_url = "https://media.discordapp.net/attachments/1412823986869637272/1415317557522595921/ChatGPT_Image_10_.._2568_19_15_59.png?format=webp&quality=lossless",
+        embeds = {{
+            title       = "<:Wave:1410385170028167299>  **__Test Webhooks__**",
+            color       = 13576024,
+            -- ใส่ค่าจริงลง description
+            description =
+                "🟢  **_Ready to use_**\n" ..
+                "👤  **Name** : **" .. playerName .. "**\n" ..
+                "🌐  **Game** : **" .. mapName .. "**\n" ..
+                "🧭  **PlaceID** : **" .. placeId .. "**\n",
+            thumbnail = { url = "" },
+            fields    = {}  -- ไม่ใช้ fields ก็ลบทิ้งได้
+        }}
+    }
+
+    return HttpService:JSONEncode(payload)
+end
+
+-- ปุ่ม: Test Webhooks (ใช้ payload ข้างบน)
+WH_Right:AddButton("Test Webhooks", function()
+    local url = currentWebhook()
+    if url == "" then
+        Library:Notify("กรุณาใส่ Webhook URL ก่อน", 3)
+        return
+    end
+
+    local req = (syn and syn.request) or (http and http.request) or http_request or request or HttpPost
+    if not req then
+        Library:Notify("ไม่พบฟังก์ชัน request ของ executor", 3)
+        return
+    end
+
+    local body = buildCustomTestPayload()
+    local ok, res = pcall(function()
+        return req({
+            Url     = url,
+            Body    = body,
+            Method  = "POST",
+            Headers = { ["Content-Type"] = "application/json" }
+        })
+    end)
+
+    if ok then
+        Library:Notify("ส่ง Test Webhook แล้ว ✅", 3)
+    else
+        Library:Notify("ส่ง Webhook ไม่สำเร็จ ❌ (ดู Output)", 4)
+        warn("[TestWebhook] Error:", res)
+    end
+end)
+
+-- Toggle: เปิด/ปิด Auto Webhook ตอนจบแมตช์
+WH_Left:AddToggle("AutoMatchWebhook", { Text = "Enable Auto Webhook on Match End", Default = false })
+
+-- ===== กลไก Auto Webhook on Match End =====
+local function safeWait(root, path, timeoutPerStep)
+    local node = root
+    for _, name in ipairs(path) do
+        node = node:WaitForChild(name, timeoutPerStep or 3)
+        if not node then return nil end
+    end
+    return node
+end
+
+-- แหล่งข้อมูล
+local RewardsUI        = safeWait(pg, {"RewardsUI"})
+local GameRunningValue = safeWait(ReplicatedStorage, {"Values","Game","GameRunning"})
+local pdataRoot        = safeWait(ReplicatedStorage, {"Player_Data", player.Name, "Data"})
+local leaderstats      = safeWait(player, {"leaderstats"})
+local MapLabel         = safeWait(pg, {"HUD","InGame","Main","GameInfo","Gamemode","Label"})
+local TotalTimeLabel   = safeWait(pg, {"RewardsUI","Main","LeftSide","TotalTime"})
+local RewardsList      = safeWait(pg, {"RewardsUI","Main","LeftSide","Rewards","ItemsList"})
+
+local function readNumberFromValue(obj) local ok,val=pcall(function() return obj.Value end); if ok and val~=nil then return val end; return 0 end
+local function getGoldGemLevel()
+    if not pdataRoot then return 0,0,0 end
+    local Gold  = safeWait(pdataRoot, {"Gold"})
+    local Gem   = safeWait(pdataRoot, {"Gem"})
+    local Level = safeWait(pdataRoot, {"Level"})
+    return readNumberFromValue(Gold), readNumberFromValue(Gem), readNumberFromValue(Level)
+end
+local function getDamage() if not leaderstats then return 0 end local td = leaderstats:FindFirstChild("Total Damage"); return td and readNumberFromValue(td) or 0 end
+local function getMap() return MapLabel and MapLabel.Text or "N/A" end
+local function getTotalTime() return TotalTimeLabel and TotalTimeLabel.Text or "N/A" end
+local function collectRewards()
+    local list = {}
+    if not RewardsList then return list end
+    for _, child in ipairs(RewardsList:GetChildren()) do
+        if child.ClassName ~= "UICorner" and child.ClassName ~= "UIGridLayout" and child.ClassName ~= "UIListLayout" then
+            local rewardName, rewardAmount
+            local textLabels = {}
+            for _, d in ipairs(child:GetDescendants()) do
+                if d:IsA("TextLabel") then table.insert(textLabels, d) end
+            end
+            if #textLabels > 0 then
+                for _, tl in ipairs(textLabels) do
+                    local clean = tl.Text:gsub("[^%d]", "")
+                    if clean ~= "" then
+                        rewardAmount = tonumber(clean)
+                        for _, tl2 in ipairs(textLabels) do
+                            if tl2 ~= tl and (tl2.Text or "") ~= "" then rewardName = tl2.Text; break end
+                        end
+                        break
+                    end
+                end
+                if not rewardName then rewardName = textLabels[1].Text or child.Name end
+            else
+                rewardName = child.Name
+            end
+            table.insert(list, { name = tostring(rewardName or child.Name or "Unknown"), amount = rewardAmount or 1 })
+        end
+    end
+    return list
+end
+local function formatRewardsBlock(rewards)
+    if #rewards == 0 then return "+ (No Rewards)" end
+    local lines = {}
+    for _, r in ipairs(rewards) do table.insert(lines, string.format("+ [%s] %s", tostring(r.amount), tostring(r.name))) end
+    return table.concat(lines, "\n")
+end
+
+local function buildMatchPayload()
+    local Gold, Gem, Level = getGoldGemLevel()
+    local Damage   = getDamage()
+    local map      = getMap()
+    local timeText = getTotalTime()
+    local rewards  = collectRewards()
+
+    local embedDesc = string.format(
+        "<:sremovebgpreview:1417467741102669875>  **Name** : **||%s||**\n" ..
+        "<:imageremovebgpreview3:1417471735217000448> **Level** : **%d**\n\n" ..
+        "<:ChatGPT_Image_16_:1417496043943366777>  **__Result__ x  __ข้อมูลที่เล่น__**\n" ..
+        "```\n+ %s\n+ %s\n+ %s\n```\n" ..
+        "<:ChatGPT_Image_16_:1417499092086554684> **__Rewards__ x __รางวัลที่ได้__**\n" ..
+        "```\n%s\n```",
+        player.Name, tonumber(Level) or 0,
+        tostring(map), tostring(timeText), tostring(Damage),
+        formatRewardsBlock(rewards)
+    )
+
+    local payload = {
+        content   = "***เกมได้จบแล้ววัยรุ่น***",
+        embeds    = {{
+            title       = "***Anime Rangers X***",
+            description = embedDesc,
+            color       = 191364,
+            fields      = {
+                { name = "<:Gem:1361906296823222336>  **Gem**",  value = tostring(Gem),  inline = true },
+                { name = "<:Gold:1361906308214947880> **Gold**", value = tostring(Gold), inline = true },
+            },
+            thumbnail   = {
+                url = "https://media.discordapp.net/attachments/1412823986869637272/1415631453253013575/1000.png?format=webp&quality=lossless"
+            }
+        }},
+        username   = "RepintX",
+        avatar_url = "https://cdn.discordapp.com/attachments/1412823986869637272/1415317557522595921/ChatGPT_Image_10_.._2568_19_15_59.png",
+        attachments = {}
+    }
+
+    return HttpService:JSONEncode(payload)
+end
+
+local function matchEnded()
+    local rewardsOn = RewardsUI and RewardsUI.Enabled == true
+    local running   = GameRunningValue and GameRunningValue.Value == true
+    return rewardsOn and (not running)
+end
+
+local WH_State = { running=false, token=0, sentThisRound=false }
+
+local function sendMatchWebhook()
+    local req = (syn and syn.request) or (http and http.request) or http_request or request or HttpPost
+    if not req then warn("[Webhook] No HTTP request function available."); return end
+    local url = currentWebhook()
+    if not url or url == "" then warn("[Webhook] Empty URL"); return end
+    local body = buildMatchPayload()
+    pcall(function()
+        req({
+            Url     = url,
+            Method  = "POST",
+            Headers = { ["Content-Type"] = "application/json" },
+            Body    = body
+        })
+    end)
+end
+
+local function startWebhookWatcher()
+    if WH_State.running then return end
+    WH_State.running = true
+    WH_State.token  += 1
+    local my = WH_State.token
+
+    task.spawn(function()
+        -- listeners
+        if RewardsUI then
+            RewardsUI:GetPropertyChangedSignal("Enabled"):Connect(function()
+                if not WH_State.running or my ~= WH_State.token then return end
+                if matchEnded() and not WH_State.sentThisRound then
+                    WH_State.sentThisRound = true
+                    sendMatchWebhook()
+                end
+            end)
+        end
+        if GameRunningValue then
+            GameRunningValue:GetPropertyChangedSignal("Value"):Connect(function()
+                if not WH_State.running or my ~= WH_State.token then return end
+                if GameRunningValue.Value == true then
+                    WH_State.sentThisRound = false
+                end
+                if matchEnded() and not WH_State.sentThisRound then
+                    WH_State.sentThisRound = true
+                    sendMatchWebhook()
+                end
+            end)
+        end
+
+        -- polling เผื่อเปิดสคริปต์ตอนเงื่อนไขพร้อมอยู่แล้ว
+        while WH_State.running and (my == WH_State.token) do
+            if matchEnded() and not WH_State.sentThisRound then
+                WH_State.sentThisRound = true
+                sendMatchWebhook()
+            end
+            task.wait(0.5)
+        end
+
+        if my == WH_State.token then WH_State.running = false end
+    end)
+end
+
+local function stopWebhookWatcher()
+    if not WH_State.running then return end
+    WH_State.token  += 1
+    WH_State.running = false
+end
+
+Toggles.AutoMatchWebhook:OnChanged(function(v)
+    if v then startWebhookWatcher() else stopWebhookWatcher() end
+end)
 
 --====================================================
 -- UI Settings / Themes / Saves
@@ -720,7 +1010,7 @@ Library.ToggleKeybind = Options.MenuKeybind
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
-SaveManager:SetIgnoreIndexes({ "MenuKeybind" })
+SaveManager:SetIgnoreIndexes({ "MenuKeybind", "WebhookURL" }) -- กัน autoload keybind + webhook เผลอรีเซ็ต
 ThemeManager:SetFolder("MyScriptHub")
 SaveManager:SetFolder("MyScriptHub/specific-game")
 SaveManager:SetSubFolder("specific-place")
