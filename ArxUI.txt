@@ -1,0 +1,1135 @@
+--====================================================
+-- RepintX (Nothing UI) - All-in-One
+-- - Full AutoSave (JSON)
+-- - Event / Game / Create Room / UI Settings / Webhooks
+-- - Webhooks: URL Input + Auto Send Toggle
+--====================================================
+
+--======================= Services =======================
+local Players           = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local GuiService        = game:GetService("GuiService")
+local VIM               = game:GetService("VirtualInputManager")
+local HttpService       = game:GetService("HttpService")
+local StarterGui        = game:GetService("StarterGui")
+
+local player = Players.LocalPlayer
+local pg     = player:WaitForChild("PlayerGui")
+
+--======================= AutoSave (JSON) =================
+local CONFIG_FILE = "RepintX.Nothing.auto.json"
+local hasFS = (isfile and writefile and readfile) and true or false
+local Settings, Live = {}, {}
+
+local function save()
+    if not hasFS then return end
+    local ok, enc = pcall(function() return HttpService:JSONEncode(Settings) end)
+    if ok then writefile(CONFIG_FILE, enc) end
+end
+local function load()
+    if hasFS and isfile(CONFIG_FILE) then
+        local ok, data = pcall(function() return HttpService:JSONDecode(readfile(CONFIG_FILE)) end)
+        if ok and type(data) == "table" then Settings = data end
+    end
+end
+local function get(key, default)
+    local v = Settings[key]
+    if v == nil then v = default; Settings[key] = v; save() end
+    return v
+end
+local function getKey(key, defaultName)
+    local name = get(key, defaultName)
+    return Enum.KeyCode[name] or Enum.KeyCode[defaultName] or Enum.KeyCode.T
+end
+
+load()
+
+--======================= Helpers =========================
+local function safeWaitPath(root, path, timeout)
+    local node, t0 = root, os.clock()
+    for i, name in ipairs(path) do
+        local ok, found = pcall(function() return node:WaitForChild(name, 2) end)
+        if not ok or not found then
+            repeat
+                found = node:FindFirstChild(name)
+                if found then break end
+                task.wait(0.2)
+            until (os.clock() - t0) >= (timeout or 10)
+        end
+        if not found then return nil, ("missing: %s (idx %d)"):format(name, i) end
+        node = found
+    end
+    return node
+end
+
+local function findFirstClickable(container)
+    if not container then return nil end
+    for _, d in ipairs(container:GetDescendants()) do
+        if d.Name == "Click" and (d:IsA("TextButton") or d:IsA("ImageButton")) then return d end
+        if d:IsA("TextButton") or d:IsA("ImageButton") then return d end
+    end
+    if container:IsA("TextButton") or container:IsA("ImageButton") then return container end
+    return nil
+end
+
+local function clickGuiObject(obj)
+    if not obj then return end
+    local inset  = GuiService:GetGuiInset()
+    local center = obj.AbsolutePosition + (obj.AbsoluteSize / 2)
+    VIM:SendMouseButtonEvent(center.X, center.Y + inset.Y, 0, true,  obj, 0)
+    VIM:SendMouseButtonEvent(center.X, center.Y + inset.Y, 0, false, obj, 0)
+end
+
+local function clickIfExists(pathParts, timeout)
+    local node = safeWaitPath(game, pathParts, timeout or 8)
+    if not node then return false end
+    local btn = findFirstClickable(node)
+    if not btn then return false end
+    clickGuiObject(btn)
+    return true
+end
+
+local function setBoolValueSafely(valObj, bool)
+    if not valObj then return end
+    pcall(function() if valObj.Value ~= nil then valObj.Value = bool end end)
+    pcall(function() if valObj.value ~= nil then valObj.value = bool end end)
+end
+
+local function wavesIsTwoOfTwo(wavesLabel)
+    local txt = tostring(wavesLabel.Text or "")
+    return (txt == "2/2") or (txt:find("2%s*/%s*2") ~= nil)
+end
+
+--======================= Voting Remotes ===================
+local function getVoteRemote(key)
+    local ok, r = pcall(function()
+        return ReplicatedStorage
+            :WaitForChild("Remote")
+            :WaitForChild("Server")
+            :WaitForChild("OnGame")
+            :WaitForChild("Voting")
+            :WaitForChild(key)
+    end)
+    return ok and r or nil
+end
+
+local function spamVote(remoteName, duration, interval)
+    duration = duration or (Live.RetryDuration or 5)
+    interval = interval or (Live.RetryInterval or 0.25)
+    local r = getVoteRemote(remoteName)
+    if not r then return end
+    local t0 = os.clock()
+    while (os.clock() - t0) < duration do
+        pcall(function() r:FireServer() end)
+        task.wait(interval)
+    end
+end
+
+--======================= Stage Select =====================
+local STAGE_LIST = { "Story", "Ranger", "Raids", "Infinite" }
+
+local function selectStageMode(mode)
+    mode = mode or "Story"
+    local node = safeWaitPath(pg, { "PlayRoom","Main","GameStage","Main","Stage_Select", mode }, 3)
+    if not node then return false end
+    local btn = findFirstClickable(node) or node
+    if btn then clickGuiObject(btn); return true end
+    return false
+end
+
+local function getStageRoots(stage)
+    stage = stage or "Story"
+    local baseRoot = safeWaitPath(pg, { "PlayRoom","Main","GameStage","Main","Base", stage }, 0.2)
+    local selRoot  = safeWaitPath(pg, { "PlayRoom","Main","GameStage","Main","Stage_Select", stage }, 0.2)
+    return baseRoot, selRoot
+end
+
+local function getMapScrollForStage(stage)
+    local baseRoot, selRoot = getStageRoots(stage)
+    local function pickSF(root)
+        if not root then return nil end
+        return root:FindFirstChild("ScrollingFrame") or root:FindFirstChildWhichIsA("ScrollingFrame")
+    end
+    return pickSF(baseRoot) or pickSF(selRoot)
+end
+
+local function getChapterRoot(stage, mapName)
+    local root = safeWaitPath(pg, { "PlayRoom","Main","GameStage","Main","Base","Chapter", mapName }, 0.5)
+    if root then return root end
+    local _, selRoot = getStageRoots(stage)
+    if selRoot then
+        local ch = selRoot:FindFirstChild("Chapter")
+        if ch and ch:FindFirstChild(mapName) then return ch[mapName] end
+    end
+    local any = safeWaitPath(pg, { "PlayRoom","Main","GameStage","Main" }, 0.2)
+    if any then
+        local found = any:FindFirstChild("Chapter", true)
+        if found and found:FindFirstChild(mapName) then return found[mapName] end
+    end
+    return nil
+end
+
+local function scrollIntoViewAndClick(sf, target)
+    if not (sf and target and sf:IsA("ScrollingFrame")) then return false end
+    local function clamp(n, a, b) if n < a then return a elseif n > b then return b else return n end end
+    local yInView = (target.AbsolutePosition.Y - sf.AbsolutePosition.Y) + sf.CanvasPosition.Y
+    local desired = yInView - (sf.AbsoluteSize.Y * 0.35)
+    local maxY = math.max(0, sf.AbsoluteCanvasSize.Y - sf.AbsoluteSize.Y)
+    sf.CanvasPosition = Vector2.new(0, clamp(desired, 0, maxY)); task.wait(0.06)
+    local btn = findFirstClickable(target)
+    if btn then clickGuiObject(btn); return true end
+    return false
+end
+
+local function scrollClickByName(sf, childName)
+    if not (sf and childName) then return false end
+    local target = sf:FindFirstChild(childName)
+    if not target then
+        for _, c in ipairs(sf:GetChildren()) do
+            if c.Name and c.Name:lower():find(childName:lower(), 1, true) then target = c; break end
+        end
+    end
+    if not target then return false end
+    return scrollIntoViewAndClick(sf, target)
+end
+
+local function selectMapForStage(stage, mapName)
+    local sf = getMapScrollForStage(stage)
+    if not sf then return false end
+    return scrollClickByName(sf, mapName)
+end
+
+local function selectChapterForStage(stage, mapName, chapterNum)
+    local chapRoot = getChapterRoot(stage, mapName)
+    if not chapRoot then return false end
+    local container = chapRoot:FindFirstChild(("%s_Chapter1-10"):format(mapName))
+    if container then
+        local sf = container:FindFirstChildWhichIsA("ScrollingFrame") or container
+        local name = ("%s_Chapter%d"):format(mapName, chapterNum)
+        if sf:IsA("ScrollingFrame") then
+            return scrollClickByName(sf, name)
+        else
+            local target = container:FindFirstChild(name)
+            if target then
+                local btn = findFirstClickable(target)
+                if btn then clickGuiObject(btn); return true end
+            end
+        end
+        return false
+    else
+        local directBtn = chapRoot:FindFirstChild(("%s_Chapter%d"):format(mapName, chapterNum))
+        if directBtn then
+            local parentSF = chapRoot:FindFirstChildWhichIsA("ScrollingFrame") or chapRoot
+            return scrollIntoViewAndClick(parentSF, directBtn)
+        end
+    end
+    return false
+end
+
+--======================= NOTHING UI =======================
+local NothingLibrary = loadstring(game:HttpGetAsync('https://raw.githubusercontent.com/3345-c-a-t-s-u-s/NOTHING/main/source.lua'))();
+local Notification = NothingLibrary.Notification()
+
+local Win = NothingLibrary.new({
+    Title = "RepintX",
+    SubTitle = "",
+    Theme = "Dark",
+    Keybind = getKey("_WindowKey", "LeftControl"),
+    Logo = 'http://www.roblox.com/asset/?id=18898582662'
+})
+
+local TabEvent   = Win:NewTab({ Title = "Event",   Description = "Auto Restart / Votes / Join", Icon = "rbxassetid://7733960981" })
+local TabGame    = Win:NewTab({ Title = "Game",    Description = "Votes / AutoPlay / Codes",    Icon = "rbxassetid://7733964719" })
+local TabCreate  = Win:NewTab({ Title = "Create",  Description = "Create Room",                 Icon = "rbxassetid://7743869054" })
+local TabUI      = Win:NewTab({ Title = "UI",      Description = "UI Settings",                 Icon = "rbxassetid://7743870946" })
+local TabWebhook = Win:NewTab({ Title = "Webhooks",Description = "Discord",                     Icon = "rbxassetid://7734068329" })
+
+-- Sections
+local ELeft  = TabEvent:NewSection({ Title = "Auto Restart / Votes", Position = "Left" })
+local ERight = TabEvent:NewSection({ Title = "Auto Join Modes",      Position = "Right" })
+local GLeft  = TabGame:NewSection({  Title = "Voting Remotes",       Position = "Left" })
+local GRight = TabGame:NewSection({  Title = "AutoPlay & Codes",     Position = "Right" })
+local CLeft  = TabCreate:NewSection({Title = "Setup",                 Position = "Left" })
+local CRight = TabCreate:NewSection({Title = "Actions",               Position = "Right" })
+local UILeft = TabUI:NewSection({    Title = "Menu",                  Position = "Left" })
+local WHLeft = TabWebhook:NewSection({Title = "Settings",             Position = "Left" })
+local WHRight= TabWebhook:NewSection({Title = "Actions",              Position = "Right" })
+
+--==================== EVENT: Auto Restart ==================
+Live.RetryDuration = get("RetryDuration", 10)
+Live.RetryInterval = get("RetryInterval", 0.25)
+
+local AutoRestartState = { running = false, token = 0 }
+local function startAutoRestartWatcher()
+    if AutoRestartState.running then return end
+    AutoRestartState.running = true
+    AutoRestartState.token += 1
+    local myToken = AutoRestartState.token
+    task.spawn(function()
+        local wavesLabel = safeWaitPath(pg, { "HUD","InGame","Main","TOP","List","Waves","Numbers" }, 15)
+        while AutoRestartState.running and (myToken == AutoRestartState.token) do
+            if wavesLabel and wavesIsTwoOfTwo(wavesLabel) then
+                pcall(function() pg.Settings.Enabled = true end)
+                task.wait(0.3)
+                local restartClick = safeWaitPath(pg, { "Settings","Main","Base","Space","ScrollingFrame","Restart Match","Click" }, 3)
+                if restartClick then clickGuiObject(restartClick) end
+                spamVote("VoteRetry", Live.RetryDuration, Live.RetryInterval)
+                repeat
+                    if not (AutoRestartState.running and myToken == AutoRestartState.token) then break end
+                    task.wait(0.75)
+                until not wavesIsTwoOfTwo(wavesLabel)
+            else
+                task.wait(0.35)
+            end
+        end
+        if myToken == AutoRestartState.token then AutoRestartState.running = false end
+    end)
+end
+local function stopAutoRestartWatcher()
+    if not AutoRestartState.running then return end
+    AutoRestartState.token += 1
+    AutoRestartState.running = false
+end
+
+ELeft:NewToggle({
+    Title = "Auto Restart at 2/2",
+    Default = get("AutoRestartTwoOfTwo", false),
+    Callback = function(v)
+        Settings.AutoRestartTwoOfTwo = v; save()
+        if v then startAutoRestartWatcher() else stopAutoRestartWatcher() end
+    end
+})
+ELeft:NewSlider({
+    Title = "Spam Duration (sec)",
+    Min = 3, Max = 30, Default = Live.RetryDuration,
+    Callback = function(v) Live.RetryDuration = v; Settings.RetryDuration = v; save() end
+})
+ELeft:NewSlider({
+    Title = "Spam Interval (sec)",
+    Min = 0.05, Max = 1.00, Default = Live.RetryInterval,
+    Callback = function(v) Live.RetryInterval = v; Settings.RetryInterval = v; save() end
+})
+ELeft:NewKeybind({
+    Title = "Toggle Auto Restart (F6)",
+    Default = Enum.KeyCode.F6,
+    Callback = function()
+        local new = not (Settings.AutoRestartTwoOfTwo or false)
+        Settings.AutoRestartTwoOfTwo = new; save()
+        Notification.new({ Title="Auto Restart", Description = new and "ON" or "OFF", Duration=2 })
+        if new then startAutoRestartWatcher() else stopAutoRestartWatcher() end
+    end
+})
+
+--==================== EVENT: Auto Hide Rewards =============
+local AutoHideState = { running = false, token = 0 }
+local function startAutoHideWatcher()
+    if AutoHideState.running then return end
+    AutoHideState.running = true
+    AutoHideState.token += 1
+    local myToken = AutoHideState.token
+    task.spawn(function()
+        local RewardsUI = safeWaitPath(pg, { "RewardsUI" }, 10)
+        while AutoHideState.running and (myToken == AutoHideState.token) do
+            if RewardsUI and RewardsUI.Enabled == true then pcall(function() RewardsUI.Enabled = false end) end
+            task.wait(0.5)
+        end
+        if myToken == AutoHideState.token then AutoHideState.running = false end
+    end)
+end
+local function stopAutoHideWatcher()
+    if not AutoHideState.running then return end
+    AutoHideState.token += 1
+    AutoHideState.running = false
+end
+ELeft:NewToggle({
+    Title = "Auto Hide Rewards UI",
+    Default = get("AutoHideRewards", false),
+    Callback = function(v)
+        Settings.AutoHideRewards = v; save()
+        if v then startAutoHideWatcher() else stopAutoHideWatcher() end
+    end
+})
+
+--==================== EVENT: Adventure Votes ===============
+local AdvCfg = { TargetWave = tonumber(get("AdvTargetWave", 10)) }
+local WAVE_CHOICES = { "5","10","15","20","25" }
+
+local function getCurrentWave()
+    local lbl = safeWaitPath(pg, {"HUD","InGame","Main","TOP","List","Waves","Numbers"}, 1)
+    if not lbl or not lbl.Text then return 0, 25 end
+    local a, b = tostring(lbl.Text):match("(%d+)%s*/%s*(%d+)")
+    return tonumber(a) or 0, tonumber(b) or 25
+end
+local function clickAdventureChoice(which)
+    local prompt = pg:FindFirstChild("AdventureContinuePrompt")
+    if not (prompt and prompt:IsA("ScreenGui") and prompt.Enabled) then return false end
+    local side = safeWaitPath(prompt, {"Main","LeftSide","Button"}, 1)
+    if not side then return false end
+    local node = side:FindFirstChild(which)
+    if not node then return false end
+    local btn = findFirstClickable(node) or node
+    if not btn then return false end
+    clickGuiObject(btn); return true
+end
+
+ELeft:NewDropdown({
+    Title = "Target Wave (/25)",
+    Data = WAVE_CHOICES,
+    Default = tostring(AdvCfg.TargetWave),
+    Callback = function(v)
+        local sel = tonumber(v) or 10
+        if sel < 5 then sel = 5 elseif sel > 25 then sel = 25 end
+        AdvCfg.TargetWave = sel; Settings.AdvTargetWave = sel; save()
+        Notification.new({ Title="Adventure", Description=("Target set to %d/25"):format(sel), Duration=2 })
+    end
+})
+local AdvState = { running=false, token=0 }
+local function startAdvAuto()
+    if AdvState.running then return end
+    AdvState.running = true
+    AdvState.token += 1
+    local my = AdvState.token
+    task.spawn(function()
+        local prompt = safeWaitPath(pg, {"AdventureContinuePrompt"}, 10)
+        if prompt then
+            prompt:GetPropertyChangedSignal("Enabled"):Connect(function()
+                if not AdvState.running or my ~= AdvState.token then return end
+                if prompt.Enabled then
+                    local cur = getCurrentWave()
+                    local target = AdvCfg.TargetWave or 10
+                    if cur < target then clickAdventureChoice("Endure") else clickAdventureChoice("Evade") end
+                end
+            end)
+        end
+        while AdvState.running and (my == AdvState.token) do
+            if prompt and prompt.Enabled then
+                local cur = getCurrentWave()
+                local target = AdvCfg.TargetWave or 10
+                if cur < target then clickAdventureChoice("Endure") else clickAdventureChoice("Evade") end
+                task.wait(0.6)
+            else
+                task.wait(0.2)
+            end
+        end
+        if my == AdvState.token then AdvState.running = false end
+    end)
+end
+local function stopAdvAuto()
+    if not AdvState.running then return end
+    AdvState.token += 1; AdvState.running=false
+end
+ELeft:NewToggle({
+    Title = "Auto Ready to Work",
+    Default = get("AdvAutoReady", false),
+    Callback = function(v)
+        Settings.AdvAutoReady = v; save()
+        if v then startAdvAuto() else stopAdvAuto() end
+    end
+})
+
+--==================== EVENT: Auto Join Modes ===============
+Live.EVT_JoinCooldown = get("EVT_JoinCooldown", 3)
+
+local function tryOpenSwarmEventMenu()
+    local openBtn = safeWaitPath(pg, { "HUD","MenuFrame","RightSide","Swarm Event" }, 3)
+    if openBtn and openBtn.Visible then
+        local clickObj = openBtn:FindFirstChild("Click") or openBtn; pcall(function() clickGuiObject(clickObj) end); return true
+    end
+    return false
+end
+local function tryPressSwarmEventPlay()
+    local playBtn = safeWaitPath(pg, { "Swarm Event","Main","Tabs","Play" }, 3)
+    if playBtn and playBtn.Visible then
+        local clickable = playBtn:FindFirstChild("Click") or playBtn; pcall(function() clickGuiObject(clickable) end); return true
+    end
+    return false
+end
+local function tryOpenAdventureGamemode()
+    local adv = pg:FindFirstChild("Adventure Gamemode") or select(1, safeWaitPath(pg, { "Adventure Gamemode" }, 2))
+    if adv and adv:IsA("ScreenGui") then pcall(function() adv.Enabled = true end); return true end
+    return false
+end
+local function tryPressAdventurePlay()
+    local btn = safeWaitPath(pg, { "Adventure Gamemode","Main","Base","Button","Play" }, 3)
+    if not btn then return false end
+    local clickObj = findFirstClickable(btn) or btn; if clickObj then pcall(function() clickGuiObject(clickObj) end) return true end
+    return false
+end
+local function tryPlayroomStart()
+    return clickIfExists({ "Players", player.Name, "PlayerGui","PlayRoom","Main","Game_Submit","Button","Start" }, 2.0)
+end
+local function tryOpenExpeditionMode()
+    local exp = pg:FindFirstChild("Expedition Mode") or select(1, safeWaitPath(pg, { "Expedition Mode" }, 2))
+    if exp and exp:IsA("ScreenGui") then pcall(function() exp.Enabled = true end); return true end
+    return false
+end
+local function tryPressExpeditionPlay()
+    local btn = safeWaitPath(pg, { "Expedition Mode","Main","Base","Button","Play" }, 3)
+    if not btn then return false end
+    local clickObj = findFirstClickable(btn) or btn; if clickObj then pcall(function() clickGuiObject(clickObj) end) return true end
+    return false
+end
+
+local EVT_JoinState = {
+    swarm = {running=false, token=0, last=0},
+    adv   = {running=false, token=0, last=0},
+    exp   = {running=false, token=0, last=0},
+}
+local function startSwarmJoin()
+    local s = EVT_JoinState.swarm
+    if s.running then return end
+    s.running = true; s.token += 1
+    local my = s.token
+    task.spawn(function()
+        while s.running and (my == s.token) do
+            local now = os.clock()
+            if now - (s.last or 0) >= (Live.EVT_JoinCooldown or 3) then
+                local okOpen = tryOpenSwarmEventMenu(); task.wait(0.2)
+                local okPlay = tryPressSwarmEventPlay()
+                if okOpen or okPlay then s.last = now end
+            end
+            task.wait(0.4)
+        end
+        if my == s.token then s.running = false end
+    end)
+end
+local function stopSwarmJoin() local s=EVT_JoinState.swarm; if not s.running then return end s.token+=1; s.running=false end
+
+local function startAdventureJoin()
+    local s = EVT_JoinState.adv
+    if s.running then return end
+    s.running = true; s.token += 1
+    local my = s.token
+    task.spawn(function()
+        while s.running and (my == s.token) do
+            local now = os.clock()
+            if now - (s.last or 0) >= (Live.EVT_JoinCooldown or 3) then
+                local okOpen = tryOpenAdventureGamemode(); task.wait(0.2)
+                local okPlay = tryPressAdventurePlay(); task.wait(0.2)
+                if okOpen or okPlay then tryPlayroomStart(); s.last = now end
+            end
+            task.wait(0.4)
+        end
+        if my == s.token then s.running = false end
+    end)
+end
+local function stopAdventureJoin() local s=EVT_JoinState.adv; if not s.running then return end s.token+=1; s.running=false end
+
+local function startExpeditionJoin()
+    local s = EVT_JoinState.exp
+    if s.running then return end
+    s.running = true; s.token += 1
+    local my = s.token
+    task.spawn(function()
+        while s.running and (my == s.token) do
+            local now = os.clock()
+            if now - (s.last or 0) >= (Live.EVT_JoinCooldown or 3) then
+                local okOpen = tryOpenExpeditionMode(); task.wait(0.5)
+                local okPlay = tryPressExpeditionPlay(); task.wait(0.3)
+                tryPlayroomStart()
+                if okOpen or okPlay then s.last = now end
+            end
+            task.wait(0.4)
+        end
+        if my == s.token then s.running = false end
+    end)
+end
+local function stopExpeditionJoin() local s=EVT_JoinState.exp; if not s.running then return end s.token+=1; s.running=false end
+
+ERight:NewToggle({
+    Title = "Auto Join: Swarm Event",
+    Default = get("EVT_AutoJoinSwarm", false),
+    Callback = function(v)
+        Settings.EVT_AutoJoinSwarm = v; save()
+        if v then startSwarmJoin() else stopSwarmJoin() end
+    end
+})
+ERight:NewToggle({
+    Title = "Auto Join: Adventure Gamemode",
+    Default = get("EVT_AutoJoinAdventure", false),
+    Callback = function(v)
+        Settings.EVT_AutoJoinAdventure = v; save()
+        if v then startAdventureJoin() else stopAdventureJoin() end
+    end
+})
+ERight:NewToggle({
+    Title = "Auto Join: Expedition Mode",
+    Default = get("EVT_AutoJoinExpedition", false),
+    Callback = function(v)
+        Settings.EVT_AutoJoinExpedition = v; save()
+        if v then startExpeditionJoin() else stopExpeditionJoin() end
+    end
+})
+ERight:NewSlider({
+    Title = "Join Cooldown (sec)",
+    Min = 1, Max = 15, Default = Live.EVT_JoinCooldown,
+    Callback = function(v) Live.EVT_JoinCooldown = v; Settings.EVT_JoinCooldown = v; save() end
+})
+
+--======================== GAME TAB ========================
+Live.GameVoteInterval = get("GameVoteInterval", 1.0)
+
+local VoteState = {
+    Retry = {running=false, token=0},
+    Next  = {running=false, token=0},
+    Play  = {running=false, token=0},
+}
+local function startVoteLoop(which, remoteName)
+    local state = VoteState[which]
+    if state.running then return end
+    state.running = true; state.token += 1
+    local myToken = state.token
+    task.spawn(function()
+        local r = getVoteRemote(remoteName)
+        while state.running and (myToken == state.token) do
+            if r then pcall(function() r:FireServer() end) end
+            task.wait(Live.GameVoteInterval or 1.0)
+        end
+        if myToken == state.token then state.running = false end
+    end)
+end
+local function stopVoteLoop(which) local s=VoteState[which]; if not s.running then return end s.token+=1; s.running=false end
+
+GLeft:NewToggle({
+    Title = "Auto Retry",
+    Default = get("AutoRetry", false),
+    Callback = function(v) Settings.AutoRetry = v; save(); if v then startVoteLoop("Retry","VoteRetry") else stopVoteLoop("Retry") end end
+})
+GLeft:NewToggle({
+    Title = "Auto Next",
+    Default = get("AutoNext", false),
+    Callback = function(v) Settings.AutoNext = v; save(); if v then startVoteLoop("Next","VoteNext") else stopVoteLoop("Next") end end
+})
+GLeft:NewToggle({
+    Title = "Auto Vote Game",
+    Default = get("AutoVotePlaying", false),
+    Callback = function(v) Settings.AutoVotePlaying = v; save(); if v then startVoteLoop("Play","VotePlaying") else stopVoteLoop("Play") end end
+})
+GLeft:NewSlider({
+    Title = "Remote Interval (sec)",
+    Min = 0.1, Max = 5.0, Default = Live.GameVoteInterval,
+    Callback = function(v) Live.GameVoteInterval = v; Settings.GameVoteInterval = v; save() end
+})
+
+-- AutoPlay & Codes
+GRight:NewToggle({
+    Title = "AutoPlay",
+    Default = get("AutoPlayBool", false),
+    Callback = function(v)
+        Settings.AutoPlayBool = v; save()
+        local node = safeWaitPath(ReplicatedStorage, { "Player_Data", player.Name, "Data", "AutoPlay" }, 10)
+        if node then setBoolValueSafely(node, v) Notification.new({Title="AutoPlay", Description=tostring(v), Duration=2})
+        else Notification.new({Title="AutoPlay", Description="path not found", Duration=3}) end
+    end
+})
+
+local ALL_CODES = {
+    "NewGearMode?!","SneakyUpdate!","First6.7Update!","CyclopsSoulMine!","CelestialMageOp67","FairyPatch67","ReallySorry4Delay",
+    "FallPart2!?!","Sorry6.5UpdateIsReal!!!","FairyTalePeak!","Sorry4Delay","FollowUpTheInsta!","SorryForPassiveDelay!","FixPatchSJW!",
+    "SoloPeakLeveling!","NewRaidAndEvos?!","IgrisIsMetaAgain!!","SorryForAllTheIssues!","PityOnRanger?!","TYFORTHESUPPORT!?","FallEvent?!",
+    "SorryForLate!","NewRangerUnit!","NewCode!?","BerserkUpdate?!","NewDivineTrials!","MinstaGroupOnTop!","Weloveroblox!","Shutdown2!",
+    "UpgradeInFieldFix!","DBZUpdate!","NewPortals?!","GTBossEvent!!","SorryForDelayz!","LBreset!","SECRETCODE!","RiftMode!","SAOUpd!",
+    "Dungeons!","MinorChanges!","EzSoulFrags","CraftingFix!","SmartRejoin","ChainsawUpd!","GraveyardRaid!","StatBoosters!","S3Battlepass!",
+    "SuperSuperSorry!","3xALLMODES!!","YOUTUBEBACK!!","TYBW2!","QOL2!","ARXBLEACH!","Srry4Shutdown","SmallFixs","!BrandonTheBest",
+    "!FixBossRushShop","!TYBW","!MattLovesARX2","!RaitoLovesARX","QuickFix!!","MoreFixs","Sorry4AutoTraitRoll","Sorry4EvoUnits",
+    "SorryDelay!!!","SummerEvent!","2xWeekEnd!","Sorry4Quest","SorryRaids","RAIDS","BizzareUpdate2!","Sorry4Delays","HBDTanny",
+    "JoJo Part 1","NewLobby","Instant Trait","CODEISREAL","ragebait","PortalsFix","UPDATE 1.5","THANKYOU4PATIENCE","FreeCyclopsSoul",
+    "SorryForShutdownBlameZaru"
+}
+GRight:NewButton({
+    Title = "Redeem All Codes",
+    Callback = function()
+        task.spawn(function()
+            local remote = safeWaitPath(ReplicatedStorage, { "Remote","Server","Lobby","Code" }, 10)
+            if not remote then Notification.new({Title="Codes", Description="Remote not found", Duration=3}); return end
+            local okCount, failCount = 0, 0
+            for _, code in ipairs(ALL_CODES) do
+                local ok = pcall(function() remote:FireServer(code) end)
+                if ok then okCount += 1 else failCount += 1 end
+                task.wait(0.35)
+            end
+            Notification.new({ Title="Redeem Done", Description=("OK:%d Fail:%d"):format(okCount, failCount), Duration=4 })
+        end)
+    end
+})
+
+-- Gamepasses & Speed
+Live.GamepassEnforceInterval = get("GamepassEnforceInterval", 5)
+local function getGamepassNode(passName) return safeWaitPath(ReplicatedStorage, { "Player_Data", player.Name, "Gamepass", passName }, 8) end
+local function ensureGamepassTrue(passName) local node = getGamepassNode(passName) if node then setBoolValueSafely(node, true); return true end return false end
+local function press3xSpeed()
+    local btnParent = safeWaitPath(game, { "Players", player.Name, "PlayerGui","SetSpeed","GameSpeed","framebase","buttons" }, 3)
+    if not btnParent then return false end
+    local node = btnParent:FindFirstChild("3x") or btnParent:FindFirstChildWhichIsA("TextButton")
+    if not node then return false end
+    local btn = findFirstClickable(node) or node
+    if btn then clickGuiObject(btn); return true end
+    return false
+end
+
+local GPState = { reroll = { running=false, token=0 }, speed = { running=false, token=0 } }
+local function startRerollWatcher()
+    local s = GPState.reroll
+    if s.running then return end
+    s.running = true; s.token += 1
+    local my = s.token
+    task.spawn(function()
+        while s.running and (my == s.token) do
+            ensureGamepassTrue("Auto Trait Reroll")
+            task.wait(Live.GamepassEnforceInterval or 5)
+        end
+        if my == s.token then s.running = false end
+    end)
+end
+local function stopRerollWatcher() local s=GPState.reroll; if not s.running then return end s.token+=1; s.running=false end
+
+local function startSpeedWatcher()
+    local s = GPState.speed
+    if s.running then return end
+    s.running = true; s.token += 1
+    local my = s.token
+    task.spawn(function()
+        while s.running and (my == s.token) do
+            ensureGamepassTrue("3x Game Speed")
+            task.wait(0.5)
+            press3xSpeed()
+            task.wait(Live.GamepassEnforceInterval or 5)
+        end
+        if my == s.token then s.running = false end
+    end)
+end
+local function stopSpeedWatcher() local s=GPState.speed; if not s.running then return end s.token+=1; s.running=false end
+
+GRight:NewToggle({
+    Title = "Use Auto Trait Reroll",
+    Default = get("UseAutoTraitReroll", false),
+    Callback = function(v) Settings.UseAutoTraitReroll = v; save(); if v then startRerollWatcher() else stopRerollWatcher() end end
+})
+GRight:NewToggle({
+    Title = "Use 3x Game Speed",
+    Default = get("Use3xGameSpeed", false),
+    Callback = function(v) Settings.Use3xGameSpeed = v; save(); if v then startSpeedWatcher() else stopSpeedWatcher() end end
+})
+GRight:NewSlider({
+    Title = "Enforce Interval (sec)",
+    Min = 1, Max = 30, Default = Live.GamepassEnforceInterval,
+    Callback = function(v) Live.GamepassEnforceInterval = v; Settings.GamepassEnforceInterval = v; save() end
+})
+
+--===================== CREATE ROOM ========================
+local CreateCfg = {
+    Stage      = get("CR_Stage", "Story"),
+    Map        = get("CR_Map", "OnePiece"),
+    Chapter    = tonumber(get("CR_Chapter", 1)),
+    FriendsOnly= get("CR_FriendsOnly", false),
+    AutoStart  = get("CR_AutoStart", false),
+    Difficulty = get("CR_Diff", "Normal")
+}
+local MAP_LIST = { "Berserk","BizzareRace","ChainsawMan","DBZ2","JojoPart1","Namek","Naruto","OnePiece","OPM","SAO","SoloLeveling","SoulSociety","TokyoGhoul","DemonSlayer" }
+
+local function getAvailableMaps(stage)
+    stage = stage or "Story"
+    local maps, seen = {}, {}
+    for _, m in ipairs(MAP_LIST) do seen[m]=true; table.insert(maps, m) end
+    local sf = getMapScrollForStage(stage)
+    if sf then
+        for _, child in ipairs(sf:GetChildren()) do
+            if child.Name and child.Name ~= "UIListLayout" and child.Name ~= "UIPadding" then
+                if not seen[child.Name] then seen[child.Name]=true; table.insert(maps, child.Name) end
+            end
+        end
+    end
+    table.sort(maps); return maps
+end
+
+local function refreshCreateDefaults()
+    Settings.CR_Stage = CreateCfg.Stage
+    Settings.CR_Map = CreateCfg.Map
+    Settings.CR_Chapter = CreateCfg.Chapter
+    Settings.CR_FriendsOnly = CreateCfg.FriendsOnly
+    Settings.CR_AutoStart = CreateCfg.AutoStart
+    Settings.CR_Diff = CreateCfg.Difficulty
+    save()
+end
+
+CLeft:NewDropdown({
+    Title = "Stage",
+    Data = STAGE_LIST,
+    Default = CreateCfg.Stage,
+    Callback = function(v) CreateCfg.Stage = v; refreshCreateDefaults() end
+})
+
+CLeft:NewDropdown({
+    Title = "Map",
+    Data = getAvailableMaps(CreateCfg.Stage),
+    Default = CreateCfg.Map,
+    Callback = function(v) CreateCfg.Map = v; refreshCreateDefaults() end
+})
+
+CLeft:NewDropdown({
+    Title = "Chapter",
+    Data = {"1","2","3","4","5","6","7","8","9","10"},
+    Default = tostring(CreateCfg.Chapter),
+    Callback = function(v) local n=tonumber(v) or 1 if n<1 then n=1 elseif n>10 then n=10 end CreateCfg.Chapter=n; refreshCreateDefaults() end
+})
+
+CLeft:NewDropdown({
+    Title = "Difficulty",
+    Data = {"Normal","Hard","Nightmare"},
+    Default = CreateCfg.Difficulty,
+    Callback = function(v) CreateCfg.Difficulty = v; refreshCreateDefaults() end
+})
+
+CLeft:NewToggle({
+    Title = "Friends Only",
+    Default = CreateCfg.FriendsOnly,
+    Callback = function(v)
+        CreateCfg.FriendsOnly = v; refreshCreateDefaults()
+        clickIfExists({ "Players", player.Name, "PlayerGui","PlayRoom","Main","GameStage","Main","Base","Misc","FriendOnly" }, 2)
+    end
+})
+
+CLeft:NewToggle({
+    Title = "Auto Start After Create",
+    Default = CreateCfg.AutoStart,
+    Callback = function(v) CreateCfg.AutoStart = v; refreshCreateDefaults() end
+})
+
+local function doOpenCreatePane()
+    clickIfExists({ "Players", player.Name, "PlayerGui","HUD","MenuFrame","LeftSide","Frame","PlayRoom" }, 3)
+    task.wait(0.15)
+    clickIfExists({ "Players", player.Name, "PlayerGui","PlayRoom","Main","Button","Create" }, 3)
+end
+local function selectDifficulty(diffName)
+    local path = { "Players", player.Name, "PlayerGui","PlayRoom","Main","GameStage","Main","Base","DifficultyButton", diffName }
+    local clicked = clickIfExists(path, 2)
+    if not clicked then
+        local node = safeWaitPath(game, path, 1)
+        if node then local btn = findFirstClickable(node); if btn then clickGuiObject(btn); clicked=true end end
+    end
+    return clicked
+end
+local function doCreateRoom()
+    doOpenCreatePane(); task.wait(0.15)
+    selectStageMode(CreateCfg.Stage);                       task.wait(0.12)
+    selectMapForStage(CreateCfg.Stage, CreateCfg.Map);      task.wait(0.12)
+    selectChapterForStage(CreateCfg.Stage, CreateCfg.Map, CreateCfg.Chapter); task.wait(0.10)
+    selectDifficulty(CreateCfg.Difficulty);                 task.wait(0.06)
+    if CreateCfg.FriendsOnly then
+        clickIfExists({ "Players", player.Name, "PlayerGui","PlayRoom","Main","GameStage","Main","Base","Misc","FriendOnly" }, 1.0)
+        task.wait(0.05)
+    end
+    clickIfExists({ "Players", player.Name, "PlayerGui","PlayRoom","Main","GameStage","Main","Base","Button","Create" }, 2.5)
+    if CreateCfg.AutoStart then
+        task.wait(0.35)
+        local okStart = clickIfExists({ "Players", player.Name, "PlayerGui","PlayRoom","Main","Game_Submit","Button","Start" }, 2.0)
+        if not okStart then Notification.new({Title="Create", Description="Start not found", Duration=3}) end
+    end
+end
+
+CRight:NewButton({ Title = "Open PlayRoom (Create)", Callback = doOpenCreatePane })
+CRight:NewButton({ Title = "Create Room Now",        Callback = function() task.spawn(doCreateRoom) end })
+
+--======================== WEBHOOKS ========================
+-- Helpers
+local function currentWebhook()
+    return Settings.WebhookURL or ""
+end
+local function buildCustomTestPayload()
+    local playerName = Players.LocalPlayer and Players.LocalPlayer.Name or "N/A"
+    local mapLabel   = safeWaitPath(pg, {"HUD","InGame","Main","GameInfo","Gamemode","Label"}, 1)
+    local mapName    = (mapLabel and mapLabel.Text and mapLabel.Text ~= "") and mapLabel.Text or "N/A"
+    local placeId    = tostring(game.PlaceId or "N/A")
+    local payload = {
+        username   = "RepintX",
+        avatar_url = "https://media.discordapp.net/attachments/1412823986869637272/1415317557522595921/ChatGPT_Image_10_.._2568_19_15_59.png?format=webp&quality=lossless",
+        embeds = {{
+            title       = " <:Wave:1410385170028167299>  **Test Webhooks**",
+            color       = 13576024,
+            description =
+                " <:Activate:959384160127049798>  **_Ready to use_**\n" ..
+                "<:MMM130:1146649599101120513>  **Name** : **" .. playerName .. "**\n" ..
+                "<:MMM138:1146649623738466384>  **Game** : **" .. mapName .. "**\n" ..
+                "<:MMM111:1146649536408850442>  **PlaceID** : **" .. placeId .. "**\n",
+            thumbnail = { url = "" }, fields = {}
+        }}
+    }
+    return HttpService:JSONEncode(payload)
+end
+
+-- URL Input (ใช้เมธอดใน lib ถ้ามี, ถ้าไม่มีจะสร้าง Prompt เอง)
+local function spawnUrlPrompt(defaultText)
+    local cg = (gethui and gethui()) or game:GetService("CoreGui")
+    local sg = Instance.new("ScreenGui")
+    sg.Name = "RepintX_URLPrompt"; sg.ResetOnSpawn = false
+    sg.Parent = cg
+
+    local f = Instance.new("Frame"); f.Parent = sg
+    f.Size = UDim2.fromOffset(380, 140)
+    f.Position = UDim2.fromScale(0.5, 0.5)
+    f.AnchorPoint = Vector2.new(0.5, 0.5)
+    f.BackgroundColor3 = Color3.fromRGB(25,25,25); f.BorderSizePixel = 0
+    Instance.new("UICorner", f).CornerRadius = UDim.new(0, 10)
+
+    local title = Instance.new("TextLabel", f)
+    title.Size = UDim2.new(1, -20, 0, 24)
+    title.Position = UDim2.fromOffset(10, 10)
+    title.BackgroundTransparency = 1
+    title.Font = Enum.Font.GothamBold
+    title.TextSize = 16
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.TextColor3 = Color3.new(1,1,1)
+    title.Text = "Set Discord Webhook URL"
+
+    local tb = Instance.new("TextBox", f)
+    tb.Size = UDim2.new(1, -20, 0, 34)
+    tb.Position = UDim2.fromOffset(10, 44)
+    tb.BackgroundColor3 = Color3.fromRGB(34,34,34); tb.BorderSizePixel = 0
+    Instance.new("UICorner", tb).CornerRadius = UDim.new(0, 8)
+    tb.PlaceholderText = "https://discord.com/api/webhooks/..."
+    tb.Text = defaultText or ""
+    tb.ClearTextOnFocus = false
+    tb.Font = Enum.Font.Gotham; tb.TextSize = 14; tb.TextColor3 = Color3.new(1,1,1)
+    tb.TextXAlignment = Enum.TextXAlignment.Left
+
+    local ok = Instance.new("TextButton", f)
+    ok.Size = UDim2.fromOffset(120, 32)
+    ok.Position = UDim2.new(1, -130, 1, -42)
+    ok.BackgroundColor3 = Color3.fromRGB(0, 170, 115); ok.BorderSizePixel = 0
+    Instance.new("UICorner", ok).CornerRadius = UDim.new(0, 8)
+    ok.Font = Enum.Font.GothamBold; ok.TextSize = 14; ok.TextColor3 = Color3.new(1,1,1)
+    ok.Text = "Save"
+
+    local cancel = Instance.new("TextButton", f)
+    cancel.Size = UDim2.fromOffset(120, 32)
+    cancel.Position = UDim2.new(0, 10, 1, -42)
+    cancel.BackgroundColor3 = Color3.fromRGB(70,70,70); cancel.BorderSizePixel = 0
+    Instance.new("UICorner", cancel).CornerRadius = UDim.new(0, 8)
+    cancel.Font = Enum.Font.GothamBold; cancel.TextSize = 14; cancel.TextColor3 = Color3.new(1,1,1)
+    cancel.Text = "Cancel"
+
+    ok.MouseButton1Click:Connect(function()
+        local url = tb.Text or ""
+        if url ~= "" then
+            Settings.WebhookURL = url; save()
+            Notification.new({ Title="Webhook", Description="URL saved", Duration=2 })
+        end
+        sg:Destroy()
+    end)
+    cancel.MouseButton1Click:Connect(function() sg:Destroy() end)
+end
+
+-- 1) กล่องพิมพ์ URL (พยายามใช้เมธอดใน lib ก่อน)
+local inputAdded = false
+for _, methodName in ipairs({ "NewInput", "NewTextBox", "NewBox" }) do
+    if WHLeft[methodName] then
+        inputAdded = true
+        WHLeft[methodName](WHLeft, {
+            Title = "Discord Webhook URL",
+            Default = Settings.WebhookURL or "",
+            Placeholder = "https://discord.com/api/webhooks/...",
+            Callback = function(text)
+                Settings.WebhookURL = tostring(text or "")
+                save()
+            end
+        })
+        break
+    end
+end
+if not inputAdded then
+    WHLeft:NewButton({
+        Title = "Set Webhook URL…",
+        Callback = function() spawnUrlPrompt(Settings.WebhookURL or "") end
+    })
+end
+
+-- 2) Toggle: Auto Send Webhooks
+WHLeft:NewToggle({
+    Title = "Auto Send Webhooks",
+    Default = get("AutoSendWebhooks", false),
+    Callback = function(v) Settings.AutoSendWebhooks = v; save() end
+})
+
+-- 3) ปุ่มทดสอบส่ง
+WHRight:NewButton({
+    Title = "Test Webhooks",
+    Callback = function()
+        local url = currentWebhook()
+        if url == "" then
+            Notification.new({Title="Webhook", Description="กรุณาใส่ URL ก่อน", Duration=3})
+            return
+        end
+        local req = (syn and syn.request) or (http and http.request) or http_request or request or HttpPost
+        if not req then
+            Notification.new({Title="Webhook", Description="no request() available", Duration=3})
+            return
+        end
+        local ok, res = pcall(function()
+            return req({
+                Url = url,
+                Body = buildCustomTestPayload(),
+                Method = "POST",
+                Headers = { ["Content-Type"] = "application/json" }
+            })
+        end)
+        Notification.new({ Title = "Webhook", Description = ok and "ส่งแล้ว ✅" or "ล้มเหลว ❌ (ดู Output)", Duration = 3 })
+        if not ok then warn("[TestWebhook] Error:", res) end
+    end
+})
+
+-- 4) Watcher: ส่งอัตโนมัติเมื่อจบเกม
+local RewardsUI        = safeWaitPath(pg, {"RewardsUI"})
+local GameRunningValue = safeWaitPath(ReplicatedStorage, {"Values","Game","GameRunning"})
+local pdataRoot        = safeWaitPath(ReplicatedStorage, {"Player_Data", player.Name, "Data"})
+local leaderstats      = safeWaitPath(player, {"leaderstats"})
+local TotalTimeLabel   = safeWaitPath(pg, {"RewardsUI","Main","LeftSide","TotalTime"})
+local RewardsList      = safeWaitPath(pg, {"RewardsUI","Main","LeftSide","Rewards","ItemsList"})
+local MapLabel         = safeWaitPath(pg, {"HUD","InGame","Main","GameInfo","Gamemode","Label"})
+
+local function readNumberFromValue(obj) local ok,val=pcall(function() return obj.Value end); if ok and val~=nil then return val end; return 0 end
+local function getGoldGemLevel()
+    if not pdataRoot then return 0,0,0 end
+    local Gold  = safeWaitPath(pdataRoot, {"Gold"})
+    local Gem   = safeWaitPath(pdataRoot, {"Gem"})
+    local Level = safeWaitPath(pdataRoot, {"Level"})
+    return readNumberFromValue(Gold), readNumberFromValue(Gem), readNumberFromValue(Level)
+end
+local function getDamage() if not leaderstats then return 0 end local td=leaderstats:FindFirstChild("Total Damage"); return td and readNumberFromValue(td) or 0 end
+local function getMap() return MapLabel and MapLabel.Text or "N/A" end
+local function getTotalTime() return TotalTimeLabel and TotalTimeLabel.Text or "N/A" end
+local function collectRewards()
+    local list = {}
+    if not RewardsList then return list end
+    for _, child in ipairs(RewardsList:GetChildren()) do
+        if child.ClassName ~= "UICorner" and child.ClassName ~= "UIGridLayout" and child.ClassName ~= "UIListLayout" then
+            local rewardName, rewardAmount
+            local textLabels = {}
+            for _, d in ipairs(child:GetDescendants()) do if d:IsA("TextLabel") then table.insert(textLabels, d) end end
+            if #textLabels > 0 then
+                for _, tl in ipairs(textLabels) do
+                    local clean = tl.Text:gsub("[^%d]", "")
+                    if clean ~= "" then
+                        rewardAmount = tonumber(clean)
+                        for _, tl2 in ipairs(textLabels) do if tl2 ~= tl and (tl2.Text or "") ~= "" then rewardName = tl2.Text; break end end
+                        break
+                    end
+                end
+                if not rewardName then rewardName = textLabels[1].Text or child.Name end
+            else rewardName = child.Name end
+            table.insert(list, { name = tostring(rewardName or child.Name or "Unknown"), amount = rewardAmount or 1 })
+        end
+    end
+    return list
+end
+local function formatRewardsBlock(rewards)
+    if #rewards == 0 then return "+ (No Rewards)" end
+    local lines = {}
+    for _, r in ipairs(rewards) do table.insert(lines, string.format("+ [%s] %s", tostring(r.amount), tostring(r.name))) end
+    return table.concat(lines, "\n")
+end
+local function buildMatchPayload()
+    local Gold, Gem, Level = getGoldGemLevel()
+    local Damage   = getDamage()
+    local map      = getMap()
+    local timeText = getTotalTime()
+    local rewards  = collectRewards()
+    local embedDesc = string.format(
+        "<:sremovebgpreview:1417467741102669875> **Name** : **||%s||**\n <:imageremovebgpreview3:1417471735217000448> **Level** : **%d**\n\n" ..
+        "<:ChatGPT_Image_16_:1417496043943366777> **Result x ข้อมูลที่เล่น**\n```\n+ %s\n+ %s\n+ %s\n```\n" ..
+        "<:ChatGPT_Image_16_:1417499092086554684> **Rewards x รางวัลที่ได้**\n```\n%s\n```",
+        player.Name, tonumber(Level) or 0, tostring(map), tostring(timeText), tostring(Damage), formatRewardsBlock(rewards)
+    )
+    local payload = {
+        content   = "***Game Ended***",
+        embeds    = {{
+            title       = "***Anime Rangers X***",
+            description = embedDesc,
+            color       = 191364,
+            fields      = {
+                { name = " <:Gem:1361906296823222336> **Gem**",  value = tostring(Gem),  inline = true },
+                { name = "<:Gold:1361906308214947880> **Gold**", value = tostring(Gold), inline = true },
+            }
+        }},
+        username   = "RepintX",
+        avatar_url = "https://cdn.discordapp.com/attachments/1412823986869637272/1415317557522595921/ChatGPT_Image_10_.._2568_19_15_59.png",
+        attachments = {}
+    }
+    return HttpService:JSONEncode(payload)
+end
+local function matchEnded()
+    local RewardsUI_ = RewardsUI and RewardsUI.Enabled == true
+    local running   = GameRunningValue and GameRunningValue.Value == true
+    return RewardsUI_ and (not running)
+end
+local function sendMatchWebhook()
+    local req = (syn and syn.request) or (http and http.request) or http_request or request or HttpPost
+    if not req then warn("[Webhook] No HTTP request function available."); return end
+    local url = currentWebhook(); if not url or url == "" then warn("[Webhook] Empty URL"); return end
+    local body = buildMatchPayload()
+    pcall(function() req({ Url = url, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = body }) end)
+end
+
+-- Loop watcher
+task.spawn(function()
+    local sentThisRound = false
+    while true do
+        if Settings.AutoSendWebhooks then
+            if matchEnded() and not sentThisRound then
+                sentThisRound = true; sendMatchWebhook()
+            end
+            if GameRunningValue and GameRunningValue.Value == true then
+                sentThisRound = false
+            end
+        end
+        task.wait(0.5)
+    end
+end)
+
+-- Adventure-only watcher (StarterGui)
+local SG_RewardsUI = safeWaitPath(StarterGui, {"RewardsUI"}, 5)
+local adv_sent = false
+WHLeft:NewToggle({
+    Title = "Auto Webhooks Adventure Mods",
+    Default = get("AutoSendWebhooks_Adventure", false),
+    Callback = function(v) Settings.AutoSendWebhooks_Adventure = v; save() end
+})
+task.spawn(function()
+    while true do
+        if Settings.AutoSendWebhooks_Adventure and SG_RewardsUI then
+            if SG_RewardsUI.Enabled and not adv_sent then adv_sent = true; sendMatchWebhook() end
+            if SG_RewardsUI.Enabled == false then adv_sent = false end
+        end
+        task.wait(0.5)
+    end
+end)
+
+--======================== UI SETTINGS =====================
+UILeft:NewToggle({
+    Title = "Custom Cursor",
+    Default = get("ShowCustomCursor", true),
+    Callback = function(v) Settings.ShowCustomCursor = v; save() end
+})
+UILeft:NewDropdown({
+    Title = "Notification Side",
+    Data = {"Left","Right"},
+    Default = get("NotificationSide", "Right"),
+    Callback = function(v) Settings.NotificationSide = v; save() end
+})
+UILeft:NewDropdown({
+    Title = "DPI Scale",
+    Data = {"50%","75%","100%","125%","150%","175%","200%"},
+    Default = get("DPIScale", "100%"),
+    Callback = function(v) Settings.DPIScale = v; save() end
+})
+UILeft:NewKeybind({
+    Title = "Menu Keybind",
+    Default = getKey("MenuKeybind", "RightShift"),
+    Callback = function(kc) Settings.MenuKeybind = kc.Name; save() end
+})
+
+--======================== Final Notice ====================
+Notification.new({
+    Title = "RepintX (Nothing UI)",
+    Description = hasFS and "AutoSave: ON" or "AutoSave: OFF (no FS)",
+    Duration = 4
+})
