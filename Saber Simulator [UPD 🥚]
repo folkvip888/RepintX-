@@ -1,0 +1,219 @@
+-- ✅ COMPKILLER – Auto Farm GUI (Fully Combined & Working)
+-- Author: 4lpaca + Enhanced by ChatGPT
+-- Version: v4 (Finalized)
+
+-- 🔹 Features:
+-- ✔ Auto Swing + Swing Delay
+-- ✔ Auto Sell + Sell Delay
+-- ✔ Auto Hide BackpackFull UI
+-- ✔ Toggle Buy All: Weapons / DNAs / BossBoosts / Auras
+-- ✔ Loop Buy All (optional)
+-- ✔ Auto Farm King Token (KOTH) with Anchor + Float Height (-10 to 20)
+-- ✔ Auto Hatch Eggs with adjustable delay
+
+local Compkiller = loadstring(game:HttpGet("https://raw.githubusercontent.com/4lpaca-pin/CompKiller/refs/heads/main/src/source.luau"))()
+local Notifier = Compkiller.newNotify()
+local ConfigManager = Compkiller:ConfigManager({
+	Directory = "RepintXUI",
+	Config = "FarmScript-Configs"
+})
+Compkiller:Loader("rbxassetid://83835199951251", 2.5).yield()
+
+local Window = Compkiller.new({
+	Name = "RepintX",
+	Keybind = "RightCtrl",
+	Logo = "rbxassetid://83835199951251",
+	TextSize = 15,
+})
+
+local RS = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local RunService = game:GetService("RunService")
+
+local loops = {}
+local function stopLoop(name)
+	local t = loops[name]
+	if t then
+		if typeof(t) == "RBXScriptConnection" then t:Disconnect()
+		elseif typeof(t) == "thread" then task.cancel(t) end
+		loops[name] = nil
+	end
+end
+local function startLoop(name, func)
+	stopLoop(name)
+	loops[name] = task.spawn(function()
+		while true do func() task.wait() end
+	end)
+end
+local function getEvents()
+	return RS:WaitForChild("Events", 5)
+end
+local function getCharHRP()
+	local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+	return char, char:WaitForChild("HumanoidRootPart")
+end
+local function buyAll(name)
+	local ev = getEvents():FindFirstChild("UIAction")
+	if ev then ev:FireServer(name) end
+end
+
+Window:DrawCategory({ Name = "Farm" })
+local TabMain = Window:DrawTab({ Name = "Main", Icon = "sword" })
+local TabKOTH = Window:DrawTab({ Name = "KOTH", Icon = "crown" })
+local TabEgg = Window:DrawTab({ Name = "Egg", Icon = "egg" })
+
+-- === MAIN ===
+local secFarm = TabMain:DrawSection({ Name = "Auto Farm", Position = "left" })
+local secBuy = TabMain:DrawSection({ Name = "Buy All", Position = "right" })
+
+-- Auto Swing
+secFarm:AddToggle({
+	Name = "Auto Swing",
+	Flag = "AutoSwing",
+	Callback = function(v)
+		if v then
+			startLoop("swing", function()
+				local ev = getEvents():FindFirstChild("SwingSaber")
+				if ev then ev:FireServer() end
+				task.wait(tonumber(Compkiller.Flags.SwingDelay) or 0.1)
+			end)
+		else
+			stopLoop("swing")
+		end
+	end
+})
+secFarm:AddSlider({ Name = "Swing Delay (s)", Min = 0.02, Max = 1, Default = 0.1, Round = 2, Flag = "SwingDelay", Callback = function() end })
+
+-- Auto Sell
+secFarm:AddToggle({
+	Name = "Auto Sell",
+	Flag = "AutoSell",
+	Callback = function(v)
+		if v then
+			startLoop("sell", function()
+				local ev = getEvents():FindFirstChild("SellStrength")
+				if ev then ev:FireServer() end
+				task.wait(tonumber(Compkiller.Flags.SellEvery) or 2)
+			end)
+		else
+			stopLoop("sell")
+		end
+	end
+})
+secFarm:AddSlider({ Name = "Sell Every (s)", Min = 0.5, Max = 10, Default = 2, Round = 1, Flag = "SellEvery", Callback = function() end })
+
+-- Auto Hide BackpackFull UI
+secFarm:AddToggle({
+	Name = "Auto Hide UI",
+	Flag = "AutoHideUI",
+	Callback = function(v)
+		if v then
+			startLoop("autohideui", function()
+				local gui = Players.LocalPlayer:FindFirstChild("PlayerGui")
+				local btn = gui and gui:FindFirstChild("MainGui")
+					and gui.MainGui:FindFirstChild("OtherFrames")
+					and gui.MainGui.OtherFrames:FindFirstChild("BackpackFull")
+					and gui.MainGui.OtherFrames.BackpackFull:FindFirstChild("Frame")
+					and gui.MainGui.OtherFrames.BackpackFull.Frame:FindFirstChild("Buttons")
+					and gui.MainGui.OtherFrames.BackpackFull.Frame.Buttons:FindFirstChild("Sell")
+					and gui.MainGui.OtherFrames.BackpackFull.Frame.Buttons.Sell:FindFirstChild("Button")
+				if btn then pcall(function() firesignal(btn.MouseButton1Click) end) end
+				task.wait(0.5)
+			end)
+		else
+			stopLoop("autohideui")
+		end
+	end
+})
+
+-- Buy Toggles
+secBuy:AddToggle({ Name = "Buy All Weapons", Flag = "BuyAllWeapons", Callback = function(v)
+	if v then startLoop("buyWeapons", function() buyAll("BuyAllWeapons") task.wait(2) end)
+	else stopLoop("buyWeapons") end end })
+secBuy:AddToggle({ Name = "Buy All DNAs", Flag = "BuyAllDNAs", Callback = function(v)
+	if v then startLoop("buyDNAs", function() buyAll("BuyAllDNAs") task.wait(2) end)
+	else stopLoop("buyDNAs") end end })
+secBuy:AddToggle({ Name = "Buy All BossBoosts", Flag = "BuyAllBoosts", Callback = function(v)
+	if v then startLoop("buyBoosts", function() buyAll("BuyAllBossBoosts") task.wait(2) end)
+	else stopLoop("buyBoosts") end end })
+secBuy:AddToggle({ Name = "Buy All Auras", Flag = "BuyAllAuras", Callback = function(v)
+	if v then startLoop("buyAuras", function() buyAll("BuyAllAuras") task.wait(2) end)
+	else stopLoop("buyAuras") end end })
+
+secBuy:AddToggle({
+	Name = "Loop Buy All",
+	Flag = "LoopBuyAll",
+	Callback = function(v)
+		if v then
+			startLoop("loopbuy", function()
+				buyAll("BuyAllWeapons")
+				buyAll("BuyAllDNAs")
+				buyAll("BuyAllBossBoosts")
+				buyAll("BuyAllAuras")
+				task.wait(tonumber(Compkiller.Flags.BuyLoopGap) or 5)
+			end)
+		else
+			stopLoop("loopbuy")
+		end
+	end
+})
+secBuy:AddSlider({ Name = "Buy Loop Gap (s)", Min = 1, Max = 30, Default = 5, Round = 0, Flag = "BuyLoopGap", Callback = function() end })
+
+-- === KOTH ===
+local secKoth = TabKOTH:DrawSection({ Name = "Auto KOTH", Position = "left" })
+local secKothOpt = TabKOTH:DrawSection({ Name = "Options", Position = "right" })
+
+secKoth:AddToggle({
+	Name = "Auto Farm King Token",
+	Flag = "KOTH_Farm",
+	Callback = function(v)
+		if v then
+			startLoop("koth", function()
+				local gameplay = workspace:FindFirstChild("Gameplay")
+				local boundary = gameplay and gameplay:FindFirstChild("KOTH") and gameplay.KOTH:FindFirstChild("KOH_BOUNDARY")
+				local _, hrp = getCharHRP()
+				if hrp and boundary then
+					local height = tonumber(Compkiller.Flags.KOTH_Height) or 10
+					local useAnchor = Compkiller.Flags.KOTH_UseAnchor
+					hrp.CFrame = boundary.CFrame + Vector3.new(0, height, 0)
+					if useAnchor and hrp:IsA("BasePart") then hrp.Anchored = true end
+				end
+			end)
+		else
+			stopLoop("koth")
+			local _, hrp = getCharHRP()
+			if hrp and hrp:IsA("BasePart") then hrp.Anchored = false end
+		end
+	end
+})
+secKothOpt:AddSlider({ Name = "Float Height", Min = -10, Max = 20, Default = 10, Round = 0, Flag = "KOTH_Height", Callback = function() end })
+secKothOpt:AddToggle({ Name = "Use Anchor", Flag = "KOTH_UseAnchor", Default = true, Callback = function() end })
+
+-- === EGG ===
+local secEgg = TabEgg:DrawSection({ Name = "Egg Hatch", Position = "left" })
+secEgg:AddToggle({
+	Name = "Auto Hatch",
+	Flag = "EggAutoHatch",
+	Callback = function(v)
+		if v then
+			startLoop("hatch", function()
+				local ui = LocalPlayer:FindFirstChild("PlayerGui")
+				local btn = ui and ui:FindFirstChild("MainGui")
+					and ui.MainGui.OtherFrames.OpenEggs.ButtonFrame.HatchAgain.Button
+				if btn then pcall(function() firesignal(btn.MouseButton1Click) end) end
+				task.wait(tonumber(Compkiller.Flags.HatchGap) or 0.35)
+			end)
+		else
+			stopLoop("hatch")
+		end
+	end
+})
+secEgg:AddSlider({ Name = "Hatch Delay", Min = 0.1, Max = 2.0, Default = 0.35, Round = 2, Flag = "HatchGap", Callback = function() end })
+
+Notifier.new({
+	Title = "RepintX| Saber Simulator [UPD 🥚]",
+	Content = "thank you for Use RepintX",
+	Duration = 6,
+	Icon = "rbxassetid://83835199951251"
+})
